@@ -1,0 +1,20 @@
+{
+  "name": "vaults",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "passhash": "node mkpasswd.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "better-sqlite3": "^12.2.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.1"
+  }
+}

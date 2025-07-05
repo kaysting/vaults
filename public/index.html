@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vaults</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,300,0..1,0" />
+    <link rel="stylesheet" href="/base.css">
+    <link rel="stylesheet" href="/index.css">
+    <script src="/index.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+
+<body>
+    <div id="login" class="p-abs width-full height-full d-flex" style="display: none">
+        <div id="loginCard" class="margin-auto d-flex flex-col gap-24">
+            <div class="header d-flex flex-col gap-8 items-center">
+                <span class="material-symbols-outlined">dns</span>
+                <span class="title">Vaults</span>
+            </div>
+            <form class="fields d-flex flex-col gap-16" style="width: 300px">
+                <div class="form-field">
+                    <label for="loginUsername">Username</label>
+                    <input class="textbox" type="text" id="loginUsername">
+                </div>
+                <div class="form-field">
+                    <label for="loginPassword">Password</label>
+                    <input class="textbox" type="password" id="loginPassword">
+                </div>
+                <div class="form-text text-danger d-none"></div>
+                <div class="d-flex justify-center">
+                    <button id="btnLogin" type="submit" class="btn btn-primary">
+                        <span class="material-symbols-outlined">login</span>
+                        <span>Log in</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div id="main" class="p-abs width-full height-full d-flex flex-col overflow-hidden" style="display: none">
+        <div id="nav" class="width-full d-flex gap-12 overflow-hidden flex-no-shrink">
+            <button id="btnMenu" class="btn btn-text btn-icon" disabled>
+                <span class="material-symbols-outlined">menu</span>
+            </button>
+            <button id="btnNavBack" class="btn btn-text btn-icon" title="Back">
+                <span class="material-symbols-outlined">arrow_back</span>
+            </button>
+            <button id="btnNavForward" class="btn btn-text btn-icon" title="Forward">
+                <span class="material-symbols-outlined">arrow_forward</span>
+            </button>
+            <button id="btnNavUp" class="btn btn-text btn-icon" title="Up to parent folder">
+                <span class="material-symbols-outlined">arrow_upward</span>
+            </button>
+            <button id="btnRefresh" class="btn btn-text btn-icon" title="Reload current files">
+                <span class="material-symbols-outlined">refresh</span>
+            </button>
+            <div id="breadcrumbs" class="d-flex flex-row-rev items-center overflow-hidden"></div>
+            <div class="flex-grow d-flex justify-end">
+                <button id="btnActions" class="btn btn-text btn-icon" disabled>
+                    <span class="material-symbols-outlined">more_vert</span>
+                </button>
+            </div>
+        </div>
+        <div id="actions" class="d-flex gap-12 items-center overflow-hidden overflow-x-auto flex-no-shrink">
+            <button id="btnActionUpload" class="btn btn-primary" disabled>
+                <span class="material-symbols-outlined">upload</span>
+                <span>Upload...</span>
+            </button>
+            <button id="btnActionNewFolder" class="btn btn-text-primary btn-icon" title="Create new folder" disabled>
+                <span class="material-symbols-outlined">create_new_folder</span>
+            </button>
+            <span class="sep"></span>
+            <button disabled id="btnActionCut" class="btn btn-text btn-icon" title="Cut">
+                <span class="material-symbols-outlined">content_cut</span>
+            </button>
+            <button disabled id="btnActionCopy" class="btn btn-text btn-icon" title="Copy">
+                <span class="material-symbols-outlined">content_copy</span>
+            </button>
+            <button disabled id="btnActionPaste" class="btn btn-text btn-icon" title="Paste">
+                <span class="material-symbols-outlined">content_paste</span>
+            </button>
+            <button disabled id="btnActionRename" class="btn btn-text btn-icon" title="Rename">
+                <span class="material-symbols-outlined">drive_file_rename_outline</span>
+            </button>
+            <button disabled id="btnActionDelete" class="btn btn-text-danger btn-icon" title="Delete">
+                <span class="material-symbols-outlined">delete</span>
+            </button>
+            <span class="sep"></span>
+            <button id="btnActionDownload" class="btn btn-text btn-icon" title="Download current folder as zip"
+                disabled>
+                <span class="material-symbols-outlined">download</span>
+            </button>
+            <span class="sep"></span>
+            <button id="btnActionProperties" class="btn btn-text btn-icon" title="Properties" disabled>
+                <span class="material-symbols-outlined">info</span>
+            </button>
+            <button id="btnActionSelect" class="btn btn-text btn-icon" title="Select files..." disabled>
+                <span class="material-symbols-outlined">check_box</span>
+            </button>
+            <button id="btnActionSort" class="btn btn-text btn-icon" title="Sort files..." disabled>
+                <span class="material-symbols-outlined">sort</span>
+            </button>
+            <button id="btnActionView" class="btn btn-text btn-icon" title="Change view settings..." disabled>
+                <span class="material-symbols-outlined">view_module</span>
+            </button>
+        </div>
+        <div id="content" class="flex-grow d-flex overflow-hidden">
+            <div id="sidebar" class="height-full d-flex flex-col gap-16 overflow-hidden flex-no-shrink">
+                <div class="flex-grow d-flex flex-col gap-8 overflow-auto">
+                    <div class="header">My vaults</div>
+                    <div class="vaults d-flex flex-col gap-2"></div>
+                </div>
+                <div class="d-flex flex-col gap-8">
+                    <div class="header">Account</div>
+                    <div class="account d-flex gap-8 items-center">
+                        <div class="flex-grow">
+                            Signed in as <b class="username"></b>
+                        </div>
+                        <button id="btnLogout" class="btn btn-text-danger btn-icon" title="Log out">
+                            <span class="material-symbols-outlined">logout</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div id="browser" class="flex-grow height-full d-flex flex-col overflow-hidden overflow-y-auto">
+                <div id="headers" class="d-flex gap-8 p-sticky top-0 flex-no-shrink">
+                    <div class="header icon flex-no-shrink"></div>
+                    <div class="header name flex-grow flex-no-shrink">
+                        <button id="btnSortName" class="btn btn-text width-full">
+                            <span class="label">Name</span>
+                            <span class="icon material-symbols-outlined"></span>
+                        </button>
+                    </div>
+                    <div class="header date flex-no-shrink">
+                        <button id="btnSortDate" class="btn btn-text width-full">
+                            <span class="label">Modified</span>
+                            <span class="icon material-symbols-outlined"></span>
+                        </button>
+                    </div>
+                    <div class="header size flex-no-shrink">
+                        <button id="btnSortSize" class="btn btn-text width-full">
+                            <span class="label">Size</span>
+                            <span class="icon material-symbols-outlined"></span>
+                        </button>
+                    </div>
+                </div>
+                <div id="files" class="flex-grow d-flex flex-col gap-2"></div>
+            </div>
+        </div>
+        <div id="status" class="flex-no-shrink text-clip-ellipses">Loading...</div>
+    </div>
+</body>
+
+</html>

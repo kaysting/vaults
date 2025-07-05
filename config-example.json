@@ -1,0 +1,24 @@
+{
+  "users": [
+    {
+      "username": "test",
+      "password_hash": "$2b$10$cG9FbVQUEboT7MZDBQ/rT.u405Z41rsgiyL8c5Aphhc8O7ueiqqiq"
+    }
+  ],
+  "vaults": [
+    {
+      "name": "Example",
+      "path": "./",
+      "users": [
+        "test"
+      ]
+    }
+  ],
+  "server": {
+    "port": 8080,
+    "pending_uploads_dir": "./uploads",
+    "inactive_session_expire_days": 7,
+    "download_expire_days": 7,
+    "max_upload_size_gb": 100
+  }
+}
