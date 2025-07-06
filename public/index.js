@@ -1,57 +1,3 @@
-const roundSmart = (num) => {
-    if (num < 1)
-        return parseFloat(num.toFixed(3));
-    if (num < 10)
-        return parseFloat(num.toFixed(2));
-    if (num < 100)
-        return parseFloat(num.toFixed(1));
-    return parseFloat(num.toFixed(0));
-};
-
-const formatBytes = bytes => {
-    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB'];
-    let i = 0;
-    while (bytes >= 1024 && i < units.length - 1) {
-        bytes /= 1024;
-        i++;
-    }
-    return `${roundSmart(bytes)} ${units[i]}`;
-};
-
-const msToRelativeTime = (ms) => {
-    const secs = Math.round(ms / 1000);
-    const mins = Math.round(secs / 60);
-    const hours = Math.round(mins / 60);
-    const days = Math.round(hours / 24);
-    const weeks = Math.round(days / 7);
-    const months = Math.round(days / 30.4369);
-    const years = Math.round(days / 365.2422);
-    if (secs < 180) return 'Moments';
-    if (mins < 120) return `${mins} minutes`;
-    if (hours < 48) return `${hours} hours`;
-    if (days < 14) return `${days} days`;
-    if (weeks < 12) return `${weeks} weeks`;
-    if (months < 24) return `${months} months`;
-    return `${years} years`;
-};
-const getRelativeTimestamp = (ts, anchor = Date.now()) => {
-    const ms = anchor - ts;
-    const relativeTime = msToRelativeTime(ms);
-    if (ms < 0)
-        return `${relativeTime} from now`;
-    return `${relativeTime} ago`;
-};
-
-const isElementOverflowing = (el) => {
-    const styles = window.getComputedStyle(el);
-    return (
-        styles.overflow === 'hidden' &&
-        styles.textOverflow === 'ellipsis' &&
-        styles.whiteSpace === 'nowrap' &&
-        el.scrollWidth > el.clientWidth
-    );
-};
-
 let authToken = localStorage.getItem('token');
 
 const apiRequest = async (method, url, { params = {}, data = {} } = {}) => {
@@ -100,10 +46,78 @@ const btnNavBack = document.querySelector('#btnNavBack');
 const btnNavForward = document.querySelector('#btnNavForward');
 const btnNavUp = document.querySelector('#btnNavUp');
 const btnRefresh = document.querySelector('#btnRefresh');
+const btnActionUpload = document.querySelector('#btnActionUpload');
+const btnActionNewFolder = document.querySelector('#btnActionNewFolder');
+const btnActionCut = document.querySelector('#btnActionCut');
+const btnActionCopy = document.querySelector('#btnActionCopy');
+const btnActionPaste = document.querySelector('#btnActionPaste');
+const btnActionRename = document.querySelector('#btnActionRename');
+const btnActionDelete = document.querySelector('#btnActionDelete');
+const btnActionDownload = document.querySelector('#btnActionDownload');
+const btnActionSelect = document.querySelector('#btnActionSelect');
+const btnActionSort = document.querySelector('#btnActionSort');
+const btnActionView = document.querySelector('#btnActionView');
 
 const setStatus = (text, danger = false) => {
     elStatus.textContent = text;
-    elStatus.classList.toggle('text-danger', danger);
+    elStatus.classList.toggle('danger', danger);
+};
+
+const navHistory = {
+    back: [],
+    forward: []
+};
+
+const addToHistory = (history, path) => {
+    if (history[history.length - 1] !== path) {
+        history.push(path);
+    }
+};
+
+const selectedFileClass = 'btn-tonal';
+const deselectedFileClass = 'btn-text';
+let lastSelectedFileIndex = -1;
+
+const fileSelect = (path) => {
+    const elFile = elFiles.querySelector(`.file[data-path="${path}"]`);
+    if (elFile) {
+        // Select this file
+        elFile.classList.add(selectedFileClass);
+        elFile.classList.remove(deselectedFileClass);
+    } else {
+        throw new Error(`File entry not found for path ${path}`);
+    }
+    updateActionButtons();
+};
+
+const fileDeselect = (path) => {
+    const elFile = elFiles.querySelector(`.file[data-path="${path}"]`);
+    if (elFile) {
+        // Deselect this file
+        elFile.classList.add(deselectedFileClass);
+        elFile.classList.remove(selectedFileClass);
+    } else {
+        throw new Error(`File entry not found for path ${path}`);
+    }
+    updateActionButtons();
+};
+
+const fileDeselectAll = () => {
+    const selectedFileEls = elFiles.querySelectorAll('.file.btn-tonal');
+    selectedFileEls.forEach(el => {
+        el.classList.add(deselectedFileClass);
+        el.classList.remove(selectedFileClass);
+    });
+    updateActionButtons();
+};
+
+const fileSelectAll = () => {
+    const fileEls = elFiles.querySelectorAll('.file');
+    fileEls.forEach(el => {
+        el.classList.add(selectedFileClass);
+        el.classList.remove(deselectedFileClass);
+    });
+    updateActionButtons();
 };
 
 const extensionTypes = {
@@ -229,25 +243,82 @@ let viewSize = 'normal';
 let viewHidden = false;
 let currentVault = null;
 let currentPath = '';
+let isLoaded = false;
+let clipboard = [];
 
-const navHistory = {
-    back: [],
-    forward: []
+const getSelectedFiles = () => {
+    const selectedFiles = [];
+    const fileEls = elFiles.querySelectorAll(`.file.${selectedFileClass}`);
+    fileEls.forEach(el => {
+        selectedFiles.push({
+            path: el.dataset.path,
+            isDirectory: el.dataset.isDirectory === 'true'
+        });
+    });
+    return selectedFiles;
 };
 
-const addToHistory = (history, path) => {
-    if (history[history.length - 1] !== path) {
-        history.push(path);
-    }
+const getActionStates = () => {
+    const selectedFiles = getSelectedFiles();
+    const isDirectorySelected = selectedFiles.some(f => f.isDirectory);
+    const countSelected = selectedFiles.length;
+    return {
+        countSelected,
+        isDirectorySelected,
+        canUpload: isLoaded,
+        canCreateFolder: isLoaded,
+        canCut: countSelected > 0,
+        canCopy: countSelected > 0,
+        canPaste: clipboard.length > 0,
+        canRename: countSelected === 1,
+        canDelete: countSelected > 0,
+        canDownload: isLoaded,
+        canSelect: isLoaded,
+        canChangeSort: isLoaded,
+        canChangeView: isLoaded
+    };
 };
 
-const browse = async (vault, path, shouldPushState = true) => {
+const updateActionButtons = () => {
+    const states = getActionStates();
+    btnActionUpload.disabled = !states.canUpload;
+    btnActionNewFolder.disabled = !states.canCreateFolder;
+    btnActionCut.disabled = !states.canCut;
+    btnActionCopy.disabled = !states.canCopy;
+    btnActionPaste.disabled = !states.canPaste;
+    btnActionRename.disabled = !states.canRename;
+    btnActionDelete.disabled = !states.canDelete;
+    btnActionDownload.disabled = !states.canDownload;
+    if (states.countSelected == 0)
+        btnActionDownload.title = `Download current folder as zip`;
+    else if (states.countSelected == 1 && !states.isDirectorySelected)
+        btnActionDownload.title = `Download selected file`;
+    else if (states.countSelected == 1 && states.isDirectorySelected)
+        btnActionDownload.title = `Download selected folder as zip`;
+    else if (states.countSelected > 1)
+        btnActionDownload.title = `Download selected files as zip`;
+    btnActionSelect.disabled = !states.canSelect;
+    btnActionSort.disabled = !states.canChangeSort;
+    btnActionView.disabled = !states.canChangeView;
+};
+
+const actionHandlers = {};
+
+const showFileContextMenu = () => {
+    const states = getActionStates();
+};
+
+const browse = async (vault, path = '/', shouldPushState = true) => {
     setStatus('Loading files...');
+    const isLoadedOld = isLoaded;
+    isLoaded = false;
+    updateActionButtons();
     let res;
     try {
         res = await api.get('/api/files', { vault, path });
     } catch (error) {
         setStatus(error, true);
+        isLoaded = isLoadedOld;
         return;
     }
     if (shouldPushState) {
@@ -256,6 +327,7 @@ const browse = async (vault, path, shouldPushState = true) => {
     }
     currentVault = vault;
     currentPath = res.path;
+    lastSelectedFileIndex = -1;
     updateNavButtons();
     if (shouldPushState)
         window.history.pushState({}, '', `/${vault}${res.path}`);
@@ -278,7 +350,7 @@ const browse = async (vault, path, shouldPushState = true) => {
             elCrumb.classList.add('current');
         } else {
             elCrumb.addEventListener('click', async () => {
-                await browse(vault, path, true);
+                await browse(vault, path);
             });
             const elSep = document.createElement('span');
             elSep.className = 'sep';
@@ -325,9 +397,12 @@ const browse = async (vault, path, shouldPushState = true) => {
     }
     // Render file list
     elFiles.innerHTML = '';
+    let i = 0;
     for (const file of files) {
+        // Determine file type
         const ext = file.name.split('.').pop().toLowerCase();
         const type = file.isDirectory ? 'folder' : (extensionTypes[ext] || 'file');
+        // Create file element
         const elFile = document.createElement('button');
         elFile.className = 'file btn btn-text d-flex gap-8 justify-start text-left';
         elFile.innerHTML = /*html*/`
@@ -340,27 +415,84 @@ const browse = async (vault, path, shouldPushState = true) => {
         const elName = elFile.querySelector('.name');
         const elSize = elFile.querySelector('.size');
         const elDate = elFile.querySelector('.date');
-        elIcon.textContent = typeIcons[type];
-        elName.textContent = file.name;
-        elName.title = file.name;
+        // Set file data attributes
+        elFile.dataset.index = i;
+        elFile.dataset.path = file.path;
+        elFile.dataset.isDirectory = file.isDirectory;
+        // Mark hidden if file name starts with a dot but isn't '..'
         if (file.name.startsWith('.') && file.name !== '..') {
             elFile.classList.add('is-hidden');
         }
+        // Set entry contents
+        elIcon.textContent = typeIcons[type];
+        elName.textContent = file.name;
+        elName.title = file.name;
         if (!file.isDirectory) {
             elSize.textContent = formatBytes(file.size);
             elSize.title = file.size.toLocaleString() + ' bytes';
             elDate.textContent = getRelativeTimestamp(file.modified);
             elDate.title = new Date(file.modified).toLocaleString();
         }
-        elFile.addEventListener('click', async () => {
-            if (file.isDirectory) {
-                await browse(vault, `${res.path}/${file.name}`, true);
+        // Handle file selection
+        const index = i;
+        elFile.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const isSelected = elFile.classList.contains(selectedFileClass);
+            if (e.shiftKey && lastSelectedFileIndex !== -1) {
+                // Shift selection logic
+                fileDeselectAll();
+                const fileEls = Array.from(elFiles.querySelectorAll('.file'));
+                const start = Math.min(lastSelectedFileIndex, index);
+                const end = Math.max(lastSelectedFileIndex, index);
+                for (let j = start; j <= end; j++) {
+                    const btn = fileEls[j];
+                    btn.classList.add(selectedFileClass);
+                    btn.classList.remove(deselectedFileClass);
+                }
+                updateActionButtons();
             } else {
-                // Download file
+                if (e.ctrlKey && isSelected) {
+                    fileDeselect(file.path);
+                    return;
+                }
+                if (!e.ctrlKey)
+                    fileDeselectAll();
+                fileSelect(file.path);
+                lastSelectedFileIndex = index;
             }
         });
+        // Handle file opening
+        elFile.addEventListener('dblclick', async () => {
+            if (file.isDirectory) {
+                await browse(vault, `${res.path}/${file.name}`);
+            } else {
+                const resDownload = await api.get('/api/files/download', {
+                    vault, path: file.path
+                });
+                const a = document.createElement('a');
+                a.href = `/download/${resDownload.token}`;
+                a.download = file.name;
+                a.target = '_blank';
+                a.click();
+            }
+        });
+        // Handle context menu
+        elFile.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            if (!elFile.classList.contains(selectedFileClass)) {
+                fileDeselectAll();
+                fileSelect(file.path);
+                lastSelectedFileIndex = index;
+            }
+            showFileContextMenu();
+        });
+        // Add to list
         elFiles.appendChild(elFile);
+        i++;
     }
+    // Update action buttons
+    isLoaded = true;
+    updateActionButtons();
     // Set status
     if (res.files.length === 0) {
         setStatus('This folder is empty');
@@ -375,6 +507,9 @@ const browseToCurrentPath = async () => {
         const vault = pathParts.shift();
         const path = pathParts.join('/');
         await browse(vault, path, false);
+        return true;
+    } else {
+        return false;
     }
 };
 
@@ -420,7 +555,15 @@ const init = async () => {
         elFiles.innerHTML = '';
         elBreadcrumbs.innerHTML = '';
         await loadVaults();
-        await browseToCurrentPath();
+        const browsed = await browseToCurrentPath();
+        if (!browsed) {
+            // Select first vault
+            const firstVault = elVaults.querySelector('.vault');
+            if (firstVault) {
+                const vaultName = firstVault.querySelector('.name').textContent;
+                await browse(vaultName);
+            }
+        }
     } else {
         inputLoginUsername.value = '';
         inputLoginPassword.value = '';
@@ -490,12 +633,11 @@ btnRefresh.addEventListener('click', async () => {
     await browse(currentVault, currentPath, false);
 });
 
-const updateColorMode = () => {
-    const isDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    document.body.dataset.colorMode = isDarkMode ? 'dark' : 'light';
-};
-
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateColorMode);
+elFiles.addEventListener('click', (e) => {
+    if (e.target === elFiles) {
+        fileDeselectAll();
+    }
+});
 
 document.addEventListener('DOMContentLoaded', async () => {
     await init();
@@ -504,72 +646,4 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 window.addEventListener('popstate', async () => {
     await browseToCurrentPath();
-});
-
-let tooltip;
-let currentTooltipElement;
-
-document.addEventListener('mouseover', (e) => {
-    const el = e.target.closest('[title]');
-    if (!el || el === currentTooltipElement) return;
-
-    if (currentTooltipElement && currentTooltipElement.contains(el)) {
-        // Prevent flickering when moving over child elements
-        return;
-    }
-
-    currentTooltipElement = el;
-
-    const titleText = el.getAttribute('title');
-    const tooltipHtml = el.dataset.tooltipHtml;
-    el.setAttribute('data-title', titleText);
-    el.removeAttribute('title');
-    const onlyShowOnOverflow = el.dataset.tooltipOverflow === 'true';
-    const isOverflowing = isElementOverflowing(el);
-    if (onlyShowOnOverflow && !isOverflowing) return;
-
-    tooltip = document.createElement('div');
-    tooltip.className = 'custom-tooltip';
-    if (tooltipHtml)
-        tooltip.innerHTML = tooltipHtml;
-    else
-        tooltip.innerText = titleText;
-    document.body.appendChild(tooltip);
-
-    // Positioning
-    const rect = el.getBoundingClientRect();
-    tooltip.style.opacity = 1;
-    tooltip.style.left = rect.left + window.scrollX + rect.width / 2 + 'px';
-
-    const tooltipRect = tooltip.getBoundingClientRect();
-    let top = rect.top + window.scrollY - tooltipRect.height - 5;
-    let placement = 'above';
-
-    if (top < window.scrollY) {
-        placement = 'below';
-        top = rect.bottom + window.scrollY + 5;
-    }
-    tooltip.classList.add(placement);
-    tooltip.style.top = top + 'px';
-    tooltip.style.transform = 'translateX(-50%)';
-});
-
-document.addEventListener('mouseout', (e) => {
-    const el = e.relatedTarget;
-    if (currentTooltipElement && currentTooltipElement.contains(el)) {
-        // Prevent tooltip removal when moving to child elements
-        return;
-    }
-
-    if (currentTooltipElement) {
-        currentTooltipElement.setAttribute('title', currentTooltipElement.getAttribute('data-title'));
-        currentTooltipElement.removeAttribute('data-title');
-    }
-
-    if (tooltip) {
-        tooltip.remove();
-        tooltip = null;
-    }
-
-    currentTooltipElement = null;
 });

@@ -14,6 +14,7 @@
         href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,300,0..1,0" />
     <link rel="stylesheet" href="/base.css">
     <link rel="stylesheet" href="/index.css">
+    <script src="/base.js" defer></script>
     <script src="/index.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
 </head>
@@ -93,14 +94,10 @@
                 <span class="material-symbols-outlined">delete</span>
             </button>
             <span class="sep"></span>
-            <button id="btnActionDownload" class="btn btn-text btn-icon" title="Download current folder as zip"
-                disabled>
+            <button id="btnActionDownload" class="btn btn-text btn-icon" title="Download" disabled>
                 <span class="material-symbols-outlined">download</span>
             </button>
             <span class="sep"></span>
-            <button id="btnActionProperties" class="btn btn-text btn-icon" title="Properties" disabled>
-                <span class="material-symbols-outlined">info</span>
-            </button>
             <button id="btnActionSelect" class="btn btn-text btn-icon" title="Select files..." disabled>
                 <span class="material-symbols-outlined">check_box</span>
             </button>
@@ -156,6 +153,14 @@
         </div>
         <div id="status" class="flex-no-shrink text-clip-ellipses">Loading...</div>
     </div>
+    <dialog id="custom-modal" class="modal-dialog">
+        <div class="modal-header">
+            <span id="modal-title"></span>
+            <div id="modal-header-actions"></div>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+    </dialog>
 </body>
 
 </html>

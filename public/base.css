@@ -116,6 +116,7 @@ b {
     border-radius: 4px;
     font-size: 14px;
     font-weight: 500;
+    text-decoration: none;
     cursor: pointer;
     transition: 0.1s ease-in-out;
     gap: 8px;
@@ -126,6 +127,19 @@ b {
     white-space: nowrap;
     text-overflow: ellipsis;
     flex-shrink: 0;
+    user-select: none;
+    --bg: var(--c-btn-primary-bg);
+    --text: var(--c-btn-primary-text);
+    --bgHover: var(--c-btn-primary-bg-hover);
+    --textHover: var(--c-btn-primary-text);
+    color: var(--text);
+    background: var(--bg);
+}
+
+.btn:hover,
+.btn:focus-visible {
+    background: var(--bgHover);
+    color: var(--textHover);
 }
 
 .btn.material-symbols-outlined {
@@ -143,87 +157,66 @@ b {
 }
 
 .btn.btn-primary {
-    background: var(--c-btn-primary-bg);
-    color: var(--c-btn-primary-text);
-}
-
-.btn.btn-primary:hover,
-.btn.btn-primary:focus-visible {
-    background: var(--c-btn-primary-bg-hover);
+    --bg: var(--c-btn-primary-bg);
+    --text: var(--c-btn-primary-text);
+    --bgHover: var(--c-btn-primary-bg-hover);
+    --textHover: var(--c-btn-primary-text);
 }
 
 .btn.btn-success {
-    background: var(--c-btn-success-bg);
-    color: var(--c-btn-primary-text);
-}
-
-.btn.btn-success:hover,
-.btn.btn-success:focus-visible {
-    background: var(--c-btn-success-bg-hover);
+    --bg: var(--c-btn-success-bg);
+    --text: var(--c-btn-primary-text);
+    --bgHover: var(--c-btn-success-bg-hover);
+    --textHover: var(--c-btn-primary-text);
 }
 
 .btn.btn-danger {
-    background: var(--c-btn-danger-bg);
-    color: var(--c-btn-primary-text);
-}
-
-.btn.btn-danger:hover,
-.btn.btn-danger:focus-visible {
-    background: var(--c-btn-danger-bg-hover);
+    --bg: var(--c-btn-danger-bg);
+    --text: var(--c-btn-primary-text);
+    --bgHover: var(--c-btn-danger-bg-hover);
+    --textHover: var(--c-btn-primary-text);
 }
 
 .btn.btn-secondary {
-    background: var(--c-btn-secondary-bg);
-    color: var(--c-btn-secondary-text);
-}
-
-.btn.btn-secondary:hover,
-.btn.btn-secondary:focus-visible {
-    background: var(--c-btn-secondary-bg-hover);
+    --bg: var(--c-btn-secondary-bg);
+    --text: var(--c-btn-secondary-text);
+    --bgHover: var(--c-btn-secondary-bg-hover);
+    --textHover: var(--c-btn-secondary-text);
 }
 
 .btn.btn-text {
-    background: var(--c-btn-text-bg);
-    color: var(--c-btn-text-text);
-}
-
-.btn.btn-text:hover,
-.btn.btn-text:focus-visible {
-    background: var(--c-btn-text-bg-hover);
-    color: var(--c-btn-text-text);
+    --bg: var(--c-btn-text-bg);
+    --text: var(--c-btn-text-text);
+    --bgHover: var(--c-btn-text-bg-hover);
+    --textHover: var(--c-btn-text-text);
 }
 
 .btn.btn-text-primary {
-    background: var(--c-btn-text-primary-bg);
-    color: var(--c-btn-text-primary-text);
-}
-
-.btn.btn-text-primary:hover,
-.btn.btn-text-primary:focus-visible {
-    background: var(--c-btn-text-primary-bg-hover);
-    color: var(--c-btn-text-primary-text);
+    --bg: var(--c-btn-text-primary-bg);
+    --text: var(--c-btn-text-primary-text);
+    --bgHover: var(--c-btn-text-primary-bg-hover);
+    --textHover: var(--c-btn-text-primary-text);
 }
 
 .btn.btn-text-danger {
-    background: var(--c-btn-text-danger-bg);
-    color: var(--c-btn-text-danger-text);
-}
-
-.btn.btn-text-danger:hover,
-.btn.btn-text-danger:focus-visible {
-    background: var(--c-btn-text-danger-bg-hover);
-    color: var(--c-btn-text-danger-text);
+    --bg: var(--c-btn-text-danger-bg);
+    --text: var(--c-btn-text-danger-text);
+    --bgHover: var(--c-btn-text-danger-bg-hover);
+    --textHover: var(--c-btn-text-danger-text);
 }
 
 .btn.btn-text-success {
-    background: var(--c-btn-text-success-bg);
-    color: var(--c-btn-text-success-text);
+    --bg: var(--c-btn-text-success-bg);
+    --text: var(--c-btn-text-success-text);
+    --bgHover: var(--c-btn-text-success-bg-hover);
+    --textHover: var(--c-btn-text-success-text);
 }
 
-.btn.btn-text-success:hover,
-.btn.btn-text-success:focus-visible {
-    background: var(--c-btn-text-success-bg-hover);
-    color: var(--c-btn-text-success-text);
+.btn.btn-tonal {
+    --bg: hsla(var(--hue), 90%, 60%, 30%);
+    --text: var(--c-btn-primary-text);
+    --bgHover: hsla(var(--hue), 90%, 60%, 50%);
+    --textHover: var(--c-btn-primary-text);
 }
 
 .form-field {
@@ -261,6 +254,285 @@ b {
 .textbox:focus {
     border-color: var(--c-textbox-border-focus);
     outline: 2px solid var(--c-textbox-border-focus);
+}
+
+.context-menu {
+    position: fixed;
+    z-index: 10000;
+    min-width: 220px;
+    background-color: var(--c-bg-lighter);
+    border: 1px solid var(--c-border);
+    border-radius: 8px;
+    padding: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    opacity: 0;
+    transform: scale(0.95);
+    transform-origin: top left;
+    transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+}
+
+.context-menu.visible {
+    opacity: 1;
+    transform: scale(1);
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--c-text-default);
+}
+
+.context-menu-item:hover {
+    background-color: var(--c-btn-secondary-bg-hover);
+    color: var(--c-text-bold);
+}
+
+.context-menu-item .icon {
+    font-size: 20px;
+    color: var(--c-text-muted);
+}
+
+.context-menu-item:hover .icon {
+    color: var(--c-text-default);
+}
+
+.context-menu-item .label {
+    flex-grow: 1;
+}
+
+.context-menu-item .shortcut {
+    font-size: 12px;
+    color: var(--c-text-muted);
+}
+
+.context-menu-item:hover .shortcut {
+    color: var(--c-text-muted);
+}
+
+.context-menu-separator {
+    height: 1px;
+    background-color: var(--c-border);
+    margin: 6px 0;
+}
+
+.modal-dialog {
+    width: 100%;
+    max-width: 500px;
+    border: 1px solid var(--c-border);
+    background-color: var(--c-bg);
+    border-radius: 12px;
+    /* box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); */
+    padding: 0;
+    color: var(--c-text-default);
+    opacity: 0;
+    transform: scale(0.9);
+    transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+}
+
+.modal-dialog.is-open {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.modal-dialog::backdrop {
+    background-color: rgba(0, 0, 0, 0.5);
+    /* backdrop-filter: blur(4px); */
+    opacity: 0;
+    transition: opacity 0.1s ease-in-out;
+}
+
+.modal-dialog.is-open::backdrop {
+    opacity: 1;
+}
+
+.modal-header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 16px 60px 16px 24px;
+    border-bottom: 1px solid var(--c-border);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--c-text-bold);
+}
+
+#modal-header-actions {
+    position: absolute;
+    top: 50%;
+    right: 16px;
+    transform: translateY(-50%);
+}
+
+.modal-close-btn {
+    padding: 4px;
+    width: 32px;
+    height: 32px;
+    --bg: transparent;
+    --text: var(--c-text-muted);
+    --bgHover: var(--c-btn-text-bg-hover);
+    --textHover: var(--c-text-default);
+}
+
+.modal-body {
+    padding: 24px;
+    line-height: 1.6;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 24px;
+    background-color: var(--c-bg-lighter);
+    border-top: 1px solid var(--c-border);
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* Toast Notifications */
+#toast-container {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10001;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.75rem;
+}
+
+.toast {
+    display: flex;
+    align-items: center;
+    /* Changed from stretch */
+    min-width: 320px;
+    max-width: 400px;
+    background-color: var(--c-bg-lighter);
+    border: 1px solid var(--c-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+    animation: toast-in 0.2s ease-out forwards;
+    position: relative;
+    /* For progress bar */
+    padding: 12px;
+    /* Uniform padding */
+    gap: 12px;
+}
+
+.toast.is-closing {
+    animation: toast-out 0.2s ease-in forwards;
+}
+
+.toast-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+}
+
+.toast-icon.success {
+    color: var(--c-text-success);
+}
+
+.toast-icon.danger {
+    color: var(--c-text-danger);
+}
+
+.toast-icon.info {
+    color: var(--c-text-primary);
+}
+
+.toast-content {
+    flex-grow: 1;
+}
+
+.toast-message {
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--c-text-default);
+}
+
+.toast-actions {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    /* Pushes actions to the right */
+}
+
+.toast-actions .btn {
+    height: 32px;
+    padding: 0 10px;
+    font-size: 13px;
+}
+
+.toast-actions .btn.btn-icon {
+    width: 32px;
+    height: 32px;
+}
+
+.toast-actions .btn.btn-icon .material-symbols-outlined {
+    font-size: 20px;
+}
+
+.toast-progress-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 4px;
+    background-color: var(--c-text-primary);
+    width: 0%;
+    transition: width 0.1s linear;
+}
+
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes toast-out {
+    from {
+        opacity: 1;
+        transform: translateX(0);
+    }
+
+    to {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+}
+
+#context-area:hover {
+    background-color: var(--c-bg-lighter);
+}
+
+.custom-tooltip {
+    position: fixed;
+    max-width: 400px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    background: hsla(var(--hue), 10%, 12%, 90%);
+    color: hsl(var(--hue), 10%, 90%);
+    font-size: 14px;
+    font-weight: normal;
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s ease-in-out;
+    z-index: 10000;
 }
 
 .material-symbols-outlined {
