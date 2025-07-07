@@ -34,7 +34,7 @@ const generateDownloadLink = async (vault, paths = []) => {
     const token = resCreate.token;
     const resAdd = await api.post('/api/files/download/add', { token, vault }, { paths });
     const resGet = await api.get('/api/files/download', { token });
-    const url = window.location.origin + resGet.url;
+    const url = encodeURI(window.location.origin + resGet.url);
     console.log(`Download link generated: ${url}`);
     return url;
 };
@@ -69,7 +69,6 @@ let lastSelectedFileIndex = -1;
 const fileSelect = (path) => {
     const elFile = elFiles.querySelector(`.file[data-path="${path}"]`);
     if (elFile) {
-        // Select this file
         elFile.classList.add(selectedFileClass);
         elFile.classList.remove(deselectedFileClass);
     } else {

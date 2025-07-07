@@ -390,35 +390,55 @@ app.post('/api/files/download/add', requireAuth, requireVaultAccess, async (req,
     res.json({ success: true });
 });
 
-app.get('/api/files/download', async (req, res) => {
-    const token = req.query.token;
+const requireDownloadToken = (req, res, next) => {
+    const token = req.query.token || req.params.token;
+    const isApi = req.originalUrl.startsWith('/api');
+    const sendError = (status, message) => {
+        if (isApi) {
+            res.status(status).json({ success: false, message });
+        } else {
+            res.status(status).end(message);
+        }
+    };
+
+    if (!token) {
+        return sendError(400, 'Missing download token');
+    }
     const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
     if (!download) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired download token' });
+        return sendError(404, 'Invalid or expired download token');
     }
     const paths = db.prepare(`SELECT path FROM download_files WHERE token = ?`).all(token);
     if (paths.length === 0) {
-        return res.status(404).json({ success: false, message: 'No files associated with this download' });
+        return sendError(404, 'No files associated with this download');
     }
     const vault = config.vaults.find(v => v.name === download.vault);
     if (!vault) {
-        return res.status(404).json({ success: false, message: 'The vault this file belongs to no longer exists' });
+        return sendError(404, 'The vault this file belongs to no longer exists');
     }
-    let url = `/download/${download.token}`;
+    req.download = download;
+    req.download.paths = paths.map(p => p.path);
+    req.download.vaultConfig = vault;
+    next();
+};
+
+app.get('/api/files/download', requireDownloadToken, async (req, res) => {
+    const { download, download: { paths, vaultConfig } } = req;
+    let url = `/dl/${download.token}`;
     if (paths.length === 1) {
-        const pathRel = paths[0].path;
-        const pathAbs = path.join(vault.path, pathRel);
-        const stats = await fs.promises.stat(pathAbs).catch(() => { return null; });
+        const pathRel = paths[0];
+        const pathAbs = path.join(vaultConfig.path, pathRel);
+        const stats = await fs.promises.stat(pathAbs).catch(() => null);
         if (!stats) {
             return res.status(404).json({ success: false, message: 'The file this download link points to no longer exists' });
         }
-        let name = path.basename(pathRel) || vault.name;
+        let name = path.basename(pathRel) || vaultConfig.name;
         if (stats.isDirectory()) {
             name = `${name}.zip`;
         }
         return res.json({
             success: true,
-            url: url + '/' + name
+            url: url + '/' + encodeURIComponent(name)
         });
     } else {
         return res.json({
@@ -428,69 +448,55 @@ app.get('/api/files/download', async (req, res) => {
     }
 });
 
-app.get('/download/:token{/:filename}', async (req, res) => {
-    const token = req.params.token;
-    const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
-    if (!download) {
-        return res.status(404).end('This download link has expired or invalid');
-    }
-    let paths = db.prepare(`SELECT path FROM download_files WHERE token = ?`).all(token).map(row => row.path);
-    if (paths.length === 0) {
-        return res.status(404).end('This download has no files associated with it');
-    }
-    const vault = config.vaults.find(v => v.name === download.vault);
-    if (!vault) {
-        return res.status(404).end('The vault this file belongs to no longer exists');
-    }
+app.get('/dl/:token{/:filename}', requireDownloadToken, async (req, res) => {
+    let { download: { paths, vaultConfig, username }, ipaddr } = req;
+    const vault = vaultConfig; // alias for clarity
+
     let filename = 'files';
     if (paths.length === 1) {
         const pathRel = paths[0];
         const pathAbs = path.join(vault.path, pathRel);
-        const stats = await fs.promises.stat(pathAbs).catch(() => { return null; });
+        const stats = await fs.promises.stat(pathAbs).catch(() => null);
         if (!stats) {
-            return res.status(404).json({ success: false, message: 'The file this download link points to no longer exists' });
+            return res.status(404).end('The file this download link points to no longer exists');
         }
         filename = path.basename(pathRel);
         if (stats.isDirectory()) {
-            paths = [];
-            const files = await fs.promises.readdir(pathAbs).catch(() => []);
-            for (const file of files) {
-                paths.push(path.join(pathRel, file));
-            }
+            paths = (await fs.promises.readdir(pathAbs).catch(() => [])).map(file => path.join(pathRel, file));
         } else {
-            return res.download(pathAbs, filename, { dotfiles: 'allow' });
+            return res.sendFile(pathAbs, { dotfiles: 'allow' });
         }
     }
     filename = `${filename || vault.name}.zip`;
-    log('info', `Starting zip download for ${paths.length} items from vault ${vault.name}`, { ip: req.ipaddr, username: download.username });
+    log('info', `Starting zip download for ${paths.length} items from vault ${vault.name}`, { ip: ipaddr, username });
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     const archive = archiver('zip');
     archive.on('warning', (err) => {
         if (err.code === 'ENOENT') {
-            log('warn', `Archiver warning: ${err.message}`, { ip: req.ipaddr, username: download.username });
+            log('warn', `Archiver warning: ${err.message}`, { ip: ipaddr, username });
         } else {
-            log('error', `Archiver error: ${err.message}`, { ip: req.ipaddr, username: download.username, error: err });
+            log('error', `Archiver error: ${err.message}`, { ip: ipaddr, username, error: err });
             res.status(500).send({ success: false, message: err.message });
         }
     });
     archive.on('error', (err) => {
-        log('error', `Archiver error during zip creation: ${err.message}`, { ip: req.ipaddr, username: download.username, error: err });
+        log('error', `Archiver error during zip creation: ${err.message}`, { ip: ipaddr, username, error: err });
         res.status(500).send({ success: false, message: err.message });
     });
     archive.on('finish', () => {
-        log('info', `Finished zip download for token ${token}`, { ip: req.ipaddr, username: download.username });
+        log('info', `Finished zip download for token ${req.params.token}`, { ip: ipaddr, username });
     });
     req.on('close', () => {
         if (res.writableFinished) return;
-        log('info', `Client disconnected, aborting zip download for token ${token}`, { ip: req.ipaddr, username: download.username });
+        log('info', `Client disconnected, aborting zip download for token ${req.params.token}`, { ip: ipaddr, username });
         archive.abort();
     });
     archive.pipe(res);
     for (const pathRel of paths) {
         const pathAbs = path.join(vault.path, pathRel);
         if (!fs.existsSync(pathAbs)) {
-            log('warn', `File not found during zip creation, skipping: ${pathAbs}`, { ip: req.ipaddr, username: download.username });
+            log('warn', `File not found during zip creation, skipping: ${pathAbs}`, { ip: ipaddr, username });
             continue;
         }
         const stats = await fs.promises.stat(pathAbs);
