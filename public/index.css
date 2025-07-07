@@ -101,7 +101,7 @@
 }
 
 #headers {
-    padding: 8px 20px;
+    padding: 4px 20px;
     background: var(--c-bg);
 }
 
@@ -149,7 +149,7 @@
 }
 
 #files .icon.type-folder {
-    color: hsl(var(--hue), 90%, 70%);
+    color: hsl(var(--hue), var(--sat), 70%);
 }
 
 #files .name {

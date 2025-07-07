@@ -216,6 +216,62 @@ app.put('/api/files/move', requireAuth, requireVaultAccess, async (req, res) => 
     }
 });
 
+app.put('/api/files/copy', requireAuth, requireVaultAccess, async (req, res) => {
+    const pathSrc = getCleanPaths(req.vault, req.query.path_src);
+    const pathDest = getCleanPaths(req.vault, req.query.path_dest);
+
+    if (!fs.existsSync(pathSrc.abs)) {
+        return res.status(404).json({ success: false, message: 'Source file does not exist' });
+    }
+    if (fs.existsSync(pathDest.abs)) {
+        return res.status(400).json({ success: false, message: 'Destination file already exists' });
+    }
+    if (pathSrc.rel === pathDest.rel) {
+        return res.status(400).json({ success: false, message: 'Source and destination paths are the same' });
+    }
+    if (pathSrc.rel === '/' || pathDest.rel === '/') {
+        return res.status(400).json({ success: false, message: 'The root directory itself cannot be modified' });
+    }
+
+    const copyRecursive = async (src, dest) => {
+        const stats = await fs.promises.stat(src);
+        if (stats.isDirectory()) {
+            await fs.promises.mkdir(dest, { recursive: true });
+            const entries = await fs.promises.readdir(src);
+            for (const entry of entries) {
+                await copyRecursive(
+                    path.join(src, entry),
+                    path.join(dest, entry)
+                );
+            }
+        } else {
+            await fs.promises.copyFile(src, dest);
+        }
+    };
+
+    try {
+        await copyRecursive(pathSrc.abs, pathDest.abs);
+        console.log(`${req.username} copied from ${pathSrc.abs} to ${pathDest.abs}`);
+        res.json({ success: true, srcPath: pathSrc.rel, destPath: pathDest.rel });
+    } catch (error) {
+        res.status(500).json({ success: false, message: `Failed to copy file: ${error}` });
+    }
+});
+
+app.post('/api/files/folder', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+    if (fs.existsSync(req.pathAbs)) {
+        return res.status(400).json({ success: false, message: 'A file or folder already exists at the requested path' });
+    }
+    try {
+        await fs.promises.mkdir(req.pathAbs, { recursive: true });
+        console.log(`${req.username} created a folder at ${req.pathAbs}`);
+        res.json({ success: true, path: req.pathRel });
+    } catch (err) {
+        console.error('Error creating folder:', err);
+        res.status(500).json({ success: false, message: 'Failed to create folder' });
+    }
+});
+
 const uploads = {};
 
 app.get('/api/files/upload', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {

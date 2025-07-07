@@ -56,10 +56,10 @@
             <button id="btnNavForward" class="btn btn-text btn-icon" title="Forward">
                 <span class="material-symbols-outlined">arrow_forward</span>
             </button>
-            <button id="btnNavUp" class="btn btn-text btn-icon" title="Up to parent folder">
+            <button id="btnNavUp" class="btn btn-text btn-icon" title="Up to parent folder (Backspace)">
                 <span class="material-symbols-outlined">arrow_upward</span>
             </button>
-            <button id="btnRefresh" class="btn btn-text btn-icon" title="Reload current files">
+            <button id="btnRefresh" class="btn btn-text btn-icon" title="Reload current folder (R)">
                 <span class="material-symbols-outlined">refresh</span>
             </button>
             <div id="breadcrumbs" class="d-flex flex-row-rev items-center overflow-hidden"></div>
@@ -74,7 +74,8 @@
                 <span class="material-symbols-outlined">upload</span>
                 <span>Upload...</span>
             </button>
-            <button id="btnActionNewFolder" class="btn btn-text-primary btn-icon" title="Create new folder" disabled>
+            <button id="btnActionNewFolder" class="btn btn-text-primary btn-icon" title="Create new folder (Shift + N)"
+                disabled>
                 <span class="material-symbols-outlined">create_new_folder</span>
             </button>
             <span class="sep"></span>
@@ -97,6 +98,9 @@
             <button id="btnActionDownload" class="btn btn-text btn-icon" title="Download" disabled>
                 <span class="material-symbols-outlined">download</span>
             </button>
+            <button id="btnActionCopyLink" class="btn btn-text btn-icon" title="Copy download link" disabled>
+                <span class="material-symbols-outlined">link</span>
+            </button>
             <span class="sep"></span>
             <button id="btnActionSelect" class="btn btn-text btn-icon" title="Select files..." disabled>
                 <span class="material-symbols-outlined">check_box</span>
@@ -105,7 +109,7 @@
                 <span class="material-symbols-outlined">sort</span>
             </button>
             <button id="btnActionView" class="btn btn-text btn-icon" title="Change view settings..." disabled>
-                <span class="material-symbols-outlined">view_module</span>
+                <span class="material-symbols-outlined">view_list</span>
             </button>
         </div>
         <div id="content" class="flex-grow d-flex overflow-hidden">
@@ -148,19 +152,12 @@
                         </button>
                     </div>
                 </div>
-                <div id="files" class="flex-grow d-flex flex-col gap-2"></div>
+                <div id="files" class="flex-grow d-flex flex-col"></div>
             </div>
         </div>
         <div id="status" class="flex-no-shrink text-clip-ellipses">Loading...</div>
     </div>
-    <dialog id="custom-modal" class="modal-dialog">
-        <div class="modal-header">
-            <span id="modal-title"></span>
-            <div id="modal-header-actions"></div>
-        </div>
-        <div class="modal-body" id="modal-body"></div>
-        <div class="modal-footer" id="modal-footer"></div>
-    </dialog>
+    <div id="toast-container"></div>
 </body>
 
 </html>

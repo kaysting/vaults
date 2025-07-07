@@ -58,21 +58,26 @@ const isElementOverflowing = (el) => {
 let activeContextMenu = null;
 
 function hideContextMenu() {
-    if (activeContextMenu) {
-        activeContextMenu.classList.remove('visible');
-        setTimeout(() => {
-            if (activeContextMenu && activeContextMenu.parentElement) {
-                document.body.removeChild(activeContextMenu);
-                activeContextMenu = null;
-            }
-        }, 200);
-        document.removeEventListener('click', hideContextMenu);
-    }
+    return new Promise((resolve) => {
+        if (activeContextMenu) {
+            activeContextMenu.classList.remove('visible');
+            setTimeout(() => {
+                if (activeContextMenu && activeContextMenu.parentElement) {
+                    document.body.removeChild(activeContextMenu);
+                    activeContextMenu = null;
+                }
+                resolve();
+            }, 200);
+            document.removeEventListener('click', hideContextMenu);
+        } else {
+            resolve();
+        }
+    });
 }
 
-function showContextMenu(event, items) {
+async function showContextMenu(event, items, options = {}) {
     event.preventDefault();
-    hideContextMenu();
+    await hideContextMenu();
 
     const menu = document.createElement('div');
     menu.className = 'context-menu';
@@ -82,11 +87,11 @@ function showContextMenu(event, items) {
     items.forEach(itemConfig => {
         if (itemConfig.type === 'separator') {
             const separator = document.createElement('div');
-            separator.className = 'context-menu-separator';
+            separator.className = 'context-menu-separator flex-no-shrink';
             menu.appendChild(separator);
         } else {
-            const item = document.createElement('div');
-            item.className = 'context-menu-item';
+            const item = document.createElement('button');
+            item.className = 'btn btn-text context-menu-item';
             if (itemConfig.icon) {
                 const iconEl = document.createElement('span');
                 iconEl.className = 'material-symbols-outlined icon';
@@ -107,8 +112,8 @@ function showContextMenu(event, items) {
                 shortcutEl.textContent = itemConfig.shortcut;
                 item.appendChild(shortcutEl);
             }
-            item.addEventListener('click', () => {
-                if (itemConfig.onClick) itemConfig.onClick();
+            item.addEventListener('click', (e) => {
+                if (itemConfig.onClick) itemConfig.onClick(e);
                 hideContextMenu();
             });
             menu.appendChild(item);
@@ -119,10 +124,21 @@ function showContextMenu(event, items) {
     const { innerWidth, innerHeight } = window;
     const menuWidth = menu.offsetWidth;
     const menuHeight = menu.offsetHeight;
-    let x = clientX;
-    let y = clientY;
-    if (clientX + menuWidth > innerWidth) x = innerWidth - menuWidth - 5;
-    if (clientY + menuHeight > innerHeight) y = innerHeight - menuHeight - 5;
+
+    let x, y;
+
+    if (options.alignToElement) {
+        const rect = options.alignToElement.getBoundingClientRect();
+        x = rect.left + window.scrollX;
+        y = rect.bottom + window.scrollY - 5; // Position below the element
+    } else {
+        x = clientX;
+        y = clientY;
+    }
+
+    if (x + menuWidth > innerWidth) x = innerWidth - menuWidth - 5;
+    if (y + menuHeight > innerHeight) y = innerHeight - menuHeight - 5;
+
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
 
@@ -132,63 +148,29 @@ function showContextMenu(event, items) {
 
 
 // --- MODAL DIALOG (REWRITTEN) ---
-const modalElement = document.getElementById('custom-modal');
-const modalTitle = document.getElementById('modal-title');
-const modalHeaderActions = document.getElementById('modal-header-actions');
-const modalBody = document.getElementById('modal-body');
-const modalFooter = document.getElementById('modal-footer');
+function showModal({ title, bodyContent, actions, width = 500, grow = true }) {
+    const modalElement = document.createElement('dialog');
+    modalElement.className = 'modal-dialog';
+    modalElement.style.maxWidth = `${width}px`;
+    if (grow) modalElement.style.width = '100%';
 
-let isClosing = false;
-let persistentKeydownHandler = null;
-
-function closeCustomModal() {
-    if (isClosing) return;
-    isClosing = true;
-    modalElement.classList.remove('is-open');
-    setTimeout(() => {
-        modalElement.close();
-        isClosing = false;
-    }, 250);
-}
-
-modalElement.addEventListener('close', () => {
-    modalElement.classList.remove('is-open');
-    if (persistentKeydownHandler) {
-        document.removeEventListener('keydown', persistentKeydownHandler);
-        persistentKeydownHandler = null;
-    }
-});
-
-function showModal({ title, bodyContent, actions, isDismissable = true }) {
-    if (persistentKeydownHandler) {
-        document.removeEventListener('keydown', persistentKeydownHandler);
-        persistentKeydownHandler = null;
-    }
-    modalElement.removeEventListener('cancel', handleCancel);
-
+    const modalHeader = document.createElement('div');
+    modalHeader.className = 'modal-header';
+    const modalTitle = document.createElement('span');
+    modalTitle.id = 'modal-title';
     modalTitle.textContent = title;
-    modalBody.innerHTML = '';
+    const modalCloseBtn = document.createElement('button');
+    modalCloseBtn.className = 'btn btn-text btn-icon';
+    modalCloseBtn.innerHTML = '<span class="material-symbols-outlined">close</span>';
+    modalHeader.appendChild(modalTitle);
+    modalHeader.appendChild(modalCloseBtn);
+
+    const modalBody = document.createElement('div');
+    modalBody.className = 'modal-body';
     modalBody.appendChild(bodyContent);
-    modalHeaderActions.innerHTML = '';
-    modalFooter.innerHTML = '';
 
-    if (isDismissable) {
-        const closeButton = document.createElement('button');
-        closeButton.innerHTML = `<span class="material-symbols-outlined">close</span>`;
-        closeButton.className = 'btn btn-text modal-close-btn';
-        closeButton.onclick = () => closeCustomModal();
-        modalHeaderActions.appendChild(closeButton);
-        modalElement.addEventListener('cancel', handleCancel);
-    } else {
-        persistentKeydownHandler = (e) => {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-        };
-        document.addEventListener('keydown', persistentKeydownHandler);
-    }
-
+    const modalFooter = document.createElement('div');
+    modalFooter.className = 'modal-footer';
     actions.forEach(actionConfig => {
         const button = document.createElement('button');
         button.textContent = actionConfig.label;
@@ -198,21 +180,47 @@ function showModal({ title, bodyContent, actions, isDismissable = true }) {
                 actionConfig.onClick();
             }
             if (actionConfig.preventClose !== true) {
-                closeCustomModal();
+                closeCustomModal(modalElement);
             }
         });
         modalFooter.appendChild(button);
+    });
+
+    modalElement.appendChild(modalHeader);
+    modalElement.appendChild(modalBody);
+    modalElement.appendChild(modalFooter);
+    document.body.appendChild(modalElement);
+
+    const closeCustomModal = (modal) => {
+        modal.classList.remove('is-open');
+        setTimeout(() => {
+            if (modal.parentElement) {
+                modal.close();
+                document.body.removeChild(modal);
+            }
+        }, 250);
+    };
+
+    modalCloseBtn.addEventListener('click', () => {
+        closeCustomModal(modalElement);
+    });
+
+    modalElement.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        closeCustomModal(modalElement);
+    });
+
+    modalElement.addEventListener('close', (event) => {
+        event.preventDefault();
+        closeCustomModal(modalElement);
     });
 
     modalElement.showModal();
     setTimeout(() => {
         modalElement.classList.add('is-open');
     }, 10);
-}
 
-function handleCancel(event) {
-    event.preventDefault();
-    closeCustomModal();
+    return modalElement;
 }
 
 /**
@@ -385,3 +393,7 @@ const updateColorMode = () => {
 };
 
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateColorMode);
+
+document.addEventListener('DOMContentLoaded', () => {
+    updateColorMode();
+});

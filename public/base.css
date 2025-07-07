@@ -1,5 +1,6 @@
 body {
     --hue: 210;
+    --sat: 90%;
 }
 
 body[data-color-mode="dark"] {
@@ -11,9 +12,9 @@ body[data-color-mode="dark"] {
     --c-text-muted: hsl(var(--hue), 10%, 60%);
     --c-text-danger: hsl(340, 90%, 70%);
     --c-text-success: hsl(150, 90%, 70%);
-    --c-text-primary: hsl(var(--hue), 90%, 70%);
-    --c-btn-primary-bg: hsl(var(--hue), 90%, 70%);
-    --c-btn-primary-bg-hover: hsl(var(--hue), 90%, 80%);
+    --c-text-primary: hsl(var(--hue), var(--sat), 70%);
+    --c-btn-primary-bg: hsl(var(--hue), var(--sat), 70%);
+    --c-btn-primary-bg-hover: hsl(var(--hue), var(--sat), 80%);
     --c-btn-primary-text: hsl(var(--hue), 0%, 0%);
     --c-btn-success-bg: hsl(150, 90%, 70%);
     --c-btn-success-bg-hover: hsl(150, 90%, 80%);
@@ -27,7 +28,7 @@ body[data-color-mode="dark"] {
     --c-btn-text-text: hsl(var(--hue), 10%, 80%);
     --c-btn-text-primary-bg: transparent;
     --c-btn-text-primary-bg-hover: hsl(var(--hue), 10%, 30%);
-    --c-btn-text-primary-text: hsl(var(--hue), 90%, 80%);
+    --c-btn-text-primary-text: hsl(var(--hue), var(--sat), 80%);
     --c-btn-text-danger-bg: transparent;
     --c-btn-text-danger-bg-hover: hsl(var(--hue), 10%, 30%);
     --c-btn-text-danger-text: hsl(340, 90%, 80%);
@@ -38,7 +39,7 @@ body[data-color-mode="dark"] {
     --c-textbox-border: hsl(var(--hue), 10%, 25%);
     --c-textbox-text: hsl(var(--hue), 10%, 90%);
     --c-textbox-placeholder: hsl(var(--hue), 10%, 60%);
-    --c-textbox-border-focus: hsl(var(--hue), 90%, 70%);
+    --c-textbox-border-focus: hsl(var(--hue), var(--sat), 70%);
     --c-scrollbar-track: hsl(var(--hue), 10%, 15%);
     --c-scrollbar-thumb: hsl(var(--hue), 10%, 40%);
 }
@@ -52,9 +53,9 @@ body[data-color-mode="light"] {
     --c-text-muted: hsl(var(--hue), 10%, 40%);
     --c-text-danger: hsl(340, 90%, 50%);
     --c-text-success: hsl(150, 90%, 40%);
-    --c-text-primary: hsl(var(--hue), 90%, 50%);
-    --c-btn-primary-bg: hsl(var(--hue), 90%, 50%);
-    --c-btn-primary-bg-hover: hsl(var(--hue), 90%, 60%);
+    --c-text-primary: hsl(var(--hue), var(--sat), 50%);
+    --c-btn-primary-bg: hsl(var(--hue), var(--sat), 50%);
+    --c-btn-primary-bg-hover: hsl(var(--hue), var(--sat), 60%);
     --c-btn-primary-text: hsl(var(--hue), 0%, 100%);
     --c-btn-success-bg: hsl(150, 90%, 50%);
     --c-btn-success-bg-hover: hsl(150, 90%, 60%);
@@ -67,7 +68,7 @@ body[data-color-mode="light"] {
     --c-btn-text-bg-hover: hsl(var(--hue), 10%, 90%);
     --c-btn-text-text: hsl(var(--hue), 10%, 20%);
     --c-btn-text-primary-bg-hover: hsl(var(--hue), 10%, 90%);
-    --c-btn-text-primary-text: hsl(var(--hue), 90%, 50%);
+    --c-btn-text-primary-text: hsl(var(--hue), var(--sat), 50%);
     --c-btn-text-danger-bg: transparent;
     --c-btn-text-danger-bg-hover: hsl(340, 90%, 95%);
     --c-btn-text-danger-text: hsl(340, 90%, 40%);
@@ -78,7 +79,7 @@ body[data-color-mode="light"] {
     --c-textbox-border: hsl(var(--hue), 10%, 85%);
     --c-textbox-text: hsl(var(--hue), 10%, 20%);
     --c-textbox-placeholder: hsl(var(--hue), 10%, 40%);
-    --c-textbox-border-focus: hsl(var(--hue), 90%, 50%);
+    --c-textbox-border-focus: hsl(var(--hue), var(--sat), 50%);
     --c-scrollbar-track: hsl(var(--hue), 10%, 100%);
     --c-scrollbar-thumb: hsl(var(--hue), 10%, 70%);
 }
@@ -107,6 +108,16 @@ b {
     color: var(--c-text-bold);
 }
 
+p {
+    margin: 0;
+    padding: 0;
+    line-height: 1.4;
+}
+
+p:not(:last-child) {
+    margin-bottom: 0.8em;
+}
+
 .btn {
     display: inline-flex;
     align-items: center;
@@ -115,12 +126,11 @@ b {
     height: 36px;
     border-radius: 4px;
     font-size: 14px;
-    font-weight: 500;
+    font-family: inherit;
     text-decoration: none;
     cursor: pointer;
     transition: 0.1s ease-in-out;
     gap: 8px;
-    border-radius: 8px;
     outline: none;
     border: none;
     overflow: hidden;
@@ -140,6 +150,10 @@ b {
 .btn:focus-visible {
     background: var(--bgHover);
     color: var(--textHover);
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--c-text-primary);
 }
 
 .btn.material-symbols-outlined {
@@ -213,9 +227,9 @@ b {
 }
 
 .btn.btn-tonal {
-    --bg: hsla(var(--hue), 90%, 60%, 30%);
+    --bg: hsla(var(--hue), var(--sat), 60%, 30%);
     --text: var(--c-btn-primary-text);
-    --bgHover: hsla(var(--hue), 90%, 60%, 50%);
+    --bgHover: hsla(var(--hue), var(--sat), 60%, 50%);
     --textHover: var(--c-btn-primary-text);
 }
 
@@ -241,7 +255,7 @@ b {
     width: 100%;
     height: 40px;
     padding: 8px 12px;
-    border-radius: 8px;
+    border-radius: 4px;
     background: var(--c-textbox-bg);
     border: 1px solid var(--c-textbox-border);
     outline: 0px solid var(--c-textbox-border-focus);
@@ -249,6 +263,10 @@ b {
     font-size: 15px;
     outline: none;
     transition: 0.2s ease-in-out;
+}
+
+.textbox::placeholder {
+    color: var(--c-textbox-placeholder);
 }
 
 .textbox:focus {
@@ -269,6 +287,8 @@ b {
     transform: scale(0.95);
     transform-origin: top left;
     transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+    display: flex;
+    flex-direction: column;
 }
 
 .context-menu.visible {
@@ -281,16 +301,25 @@ b {
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
-    border-radius: 6px;
     font-size: 14px;
     cursor: pointer;
     user-select: none;
     color: var(--c-text-default);
+    border-radius: 4px;
+    background: none;
+    border: none;
+    text-align: left;
+    transition: none;
 }
 
 .context-menu-item:hover {
-    background-color: var(--c-btn-secondary-bg-hover);
-    color: var(--c-text-bold);
+    background-color: var(--c-btn-secondary-bg);
+    color: inherit;
+}
+
+.context-menu-item:focus {
+    outline: none;
+    /* Remove default focus outline */
 }
 
 .context-menu-item .icon {
@@ -322,8 +351,6 @@ b {
 }
 
 .modal-dialog {
-    width: 100%;
-    max-width: 500px;
     border: 1px solid var(--c-border);
     background-color: var(--c-bg);
     border-radius: 12px;
@@ -355,38 +382,33 @@ b {
     position: relative;
     display: flex;
     align-items: center;
-    padding: 16px 60px 16px 24px;
-    border-bottom: 1px solid var(--c-border);
+    padding: 8px 16px 8px 24px;
     font-size: 18px;
     font-weight: 500;
     color: var(--c-text-bold);
+    border-bottom: 1px solid var(--c-border);
 }
 
-#modal-header-actions {
-    position: absolute;
-    top: 50%;
-    right: 16px;
-    transform: translateY(-50%);
+#modal-title {
+    flex-grow: 1;
 }
 
-.modal-close-btn {
-    padding: 4px;
-    width: 32px;
-    height: 32px;
-    --bg: transparent;
-    --text: var(--c-text-muted);
-    --bgHover: var(--c-btn-text-bg-hover);
-    --textHover: var(--c-text-default);
+.modal-dialog.is-persistent .modal-close-btn {
+    visibility: hidden;
 }
 
 .modal-body {
+    width: 100%;
     padding: 24px;
     line-height: 1.6;
+    display: flex;
+    flex-direction: column;
 }
 
 .modal-footer {
     display: flex;
-    justify-content: flex-end;
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
     gap: 12px;
     padding: 16px 24px;
     background-color: var(--c-bg-lighter);
@@ -398,20 +420,18 @@ b {
 /* Toast Notifications */
 #toast-container {
     position: fixed;
-    bottom: 1rem;
-    right: 1rem;
+    bottom: 24px;
+    right: 24px;
     z-index: 10001;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.75rem;
+    gap: 8px;
 }
 
 .toast {
     display: flex;
     align-items: center;
-    /* Changed from stretch */
-    min-width: 320px;
     max-width: 400px;
     background-color: var(--c-bg-lighter);
     border: 1px solid var(--c-border);

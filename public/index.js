@@ -54,9 +54,13 @@ const btnActionPaste = document.querySelector('#btnActionPaste');
 const btnActionRename = document.querySelector('#btnActionRename');
 const btnActionDelete = document.querySelector('#btnActionDelete');
 const btnActionDownload = document.querySelector('#btnActionDownload');
+const btnActionCopyLink = document.querySelector('#btnActionCopyLink');
 const btnActionSelect = document.querySelector('#btnActionSelect');
 const btnActionSort = document.querySelector('#btnActionSort');
 const btnActionView = document.querySelector('#btnActionView');
+const btnSortName = document.querySelector('#btnSortName');
+const btnSortSize = document.querySelector('#btnSortSize');
+const btnSortDate = document.querySelector('#btnSortDate');
 
 const setStatus = (text, danger = false) => {
     elStatus.textContent = text;
@@ -251,6 +255,7 @@ const getSelectedFiles = () => {
     const fileEls = elFiles.querySelectorAll(`.file.${selectedFileClass}`);
     fileEls.forEach(el => {
         selectedFiles.push({
+            el,
             path: el.dataset.path,
             isDirectory: el.dataset.isDirectory === 'true'
         });
@@ -267,15 +272,24 @@ const getActionStates = () => {
         isDirectorySelected,
         canUpload: isLoaded,
         canCreateFolder: isLoaded,
+        canOpen: countSelected === 1,
         canCut: countSelected > 0,
         canCopy: countSelected > 0,
         canPaste: clipboard.length > 0,
         canRename: countSelected === 1,
         canDelete: countSelected > 0,
         canDownload: isLoaded,
+        downloadLabel: (() => {
+            if (countSelected === 0) return 'Download all as zip';
+            if (countSelected === 1 && !isDirectorySelected) return 'Download file';
+            if (countSelected === 1 && isDirectorySelected) return 'Download folder as zip';
+            if (countSelected > 1) return 'Download files as zip';
+            return 'Download';
+        })(),
+        canCopyLink: isLoaded,
         canSelect: isLoaded,
         canChangeSort: isLoaded,
-        canChangeView: isLoaded
+        canChangeView: true
     };
 };
 
@@ -289,26 +303,269 @@ const updateActionButtons = () => {
     btnActionRename.disabled = !states.canRename;
     btnActionDelete.disabled = !states.canDelete;
     btnActionDownload.disabled = !states.canDownload;
-    if (states.countSelected == 0)
-        btnActionDownload.title = `Download current folder as zip`;
-    else if (states.countSelected == 1 && !states.isDirectorySelected)
-        btnActionDownload.title = `Download selected file`;
-    else if (states.countSelected == 1 && states.isDirectorySelected)
-        btnActionDownload.title = `Download selected folder as zip`;
-    else if (states.countSelected > 1)
-        btnActionDownload.title = `Download selected files as zip`;
+    btnActionDownload.title = states.downloadLabel;
+    btnActionCopyLink.disabled = !states.canCopyLink;
     btnActionSelect.disabled = !states.canSelect;
     btnActionSort.disabled = !states.canChangeSort;
     btnActionView.disabled = !states.canChangeView;
 };
 
-const actionHandlers = {};
-
-const showFileContextMenu = () => {
-    const states = getActionStates();
+const actions = {
+    createFolder: async () => {
+        const el = document.createElement('div');
+        el.innerHTML = /*html*/`
+            <div class="form-field">
+                <input type="text" class="textbox" placeholder="Enter folder name">
+                <div class="form-text text-danger text-left d-none"></div>
+            </div>
+        `;
+        const elInput = el.querySelector('input');
+        const elText = el.querySelector('.form-text');
+        const elModal = showModal({
+            width: 400,
+            title: 'Create new folder',
+            bodyContent: el,
+            actions: [{
+                label: 'Create',
+                class: 'btn-primary',
+                preventClose: true,
+                onClick: async () => {
+                    try {
+                        const res = await api.post('/api/files/folder', {
+                            vault: currentVault,
+                            path: currentPath + '/' + elInput.value
+                        });
+                        elModal.close();
+                        showToast({
+                            type: 'success',
+                            icon: 'check_circle',
+                            message: `Folder created!`
+                        });
+                        browse(currentVault, currentPath, false, [res.path]);
+                    } catch (error) {
+                        const errorText = error.toString();
+                        elText.textContent = errorText;
+                        elText.classList.remove('d-none');
+                    }
+                }
+            }, {
+                label: 'Cancel'
+            }]
+        });
+        elInput.focus();
+        elInput.addEventListener('keydown', (e) => {
+            elText.classList.add('d-none');
+            if (e.key.match(/[\\/:\*\?"<>\|]/)) {
+                e.preventDefault();
+                elText.textContent = `That character isn't allowed.`;
+                elText.classList.remove('d-none');
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                const btnCreate = elModal.querySelector('.btn-primary');
+                btnCreate.click();
+            }
+        });
+    },
+    delete: async () => {
+        const selectedFiles = getSelectedFiles();
+        const el = document.createElement('div');
+        el.innerHTML = /*html*/`
+            <p>Are you sure you want to delete the selected ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}?</p>
+        `;
+        showModal({
+            title: 'Confirm deletion',
+            bodyContent: el,
+            grow: false,
+            actions: [{
+                label: 'Delete',
+                class: 'btn-danger',
+                onClick: async () => {
+                    let i = 0;
+                    let countSuccess = 0;
+                    const toast = showToast({
+                        icon: 'delete',
+                        message: `...`,
+                        progressBar: true
+                    });
+                    for (const file of selectedFiles) {
+                        try {
+                            toast.updateMessage(`Deleting ${file.path.split('/').pop()} (${i + 1}/${selectedFiles.length})...`);
+                            await api.delete('/api/files', {
+                                vault: currentVault,
+                                path: file.path
+                            });
+                            countSuccess++;
+                        } catch (error) {
+                            showToast({
+                                type: 'danger',
+                                icon: 'error',
+                                message: `Failed to delete ${file.path}: ${error.message}`
+                            });
+                        }
+                        i++;
+                        toast.updateProgress((i / selectedFiles.length) * 100);
+                    }
+                    showToast({
+                        type: 'success',
+                        icon: 'check_circle',
+                        message: `${countSuccess} file${countSuccess === 1 ? '' : 's'} deleted!`
+                    });
+                    await browse(currentVault, currentPath, false);
+                }
+            }, {
+                label: 'Cancel'
+            }]
+        });
+    },
+    uploadFiles: async () => {
+        console.log('Placeholder for uploadFiles');
+    },
+    cut: async () => {
+        console.log('Placeholder for cut');
+    },
+    copy: async () => {
+        console.log('Placeholder for copy');
+    },
+    paste: async () => {
+        console.log('Placeholder for paste');
+    },
+    rename: async () => {
+        console.log('Placeholder for rename');
+    },
+    download: async () => {
+        console.log('Placeholder for download');
+    },
+    copyLink: async () => {
+        console.log('Placeholder for copyLink');
+    },
+    open: async () => {
+        const selectedFiles = getSelectedFiles();
+        selectedFiles[0].el.dispatchEvent(new Event('dblclick'));
+    }
 };
 
-const browse = async (vault, path = '/', shouldPushState = true) => {
+const showFileContextMenu = (e) => {
+    const states = getActionStates();
+    const item = {
+        upload: {
+            icon: 'upload',
+            label: 'Upload files...',
+            onClick: actions.uploadFiles
+        },
+        createFolder: {
+            icon: 'create_new_folder',
+            label: 'Create folder...',
+            onClick: actions.createFolder
+        },
+        open: {
+            icon: 'open_in_new',
+            label: 'Open',
+            onClick: actions.open
+        },
+        cut: {
+            icon: 'content_cut',
+            label: 'Cut',
+            onClick: actions.cut
+        },
+        copy: {
+            icon: 'content_copy',
+            label: 'Copy',
+            onClick: actions.copy
+        },
+        paste: {
+            icon: 'content_paste',
+            label: 'Paste',
+            onClick: actions.paste
+        },
+        rename: {
+            icon: 'drive_file_rename_outline',
+            label: 'Rename..',
+            onClick: actions.rename
+        },
+        delete: {
+            icon: 'delete',
+            label: 'Delete...',
+            onClick: actions.delete
+        },
+        download: {
+            icon: 'download',
+            label: states.downloadLabel,
+            onClick: actions.download
+        },
+        copyLink: {
+            icon: 'link',
+            label: 'Copy download link',
+            onClick: actions.copyLink
+        },
+        select: {
+            icon: 'check_box',
+            label: 'Select...',
+            onClick: (e) => {
+                const menuEl = document.querySelector('.context-menu');
+                showSelectContextMenu(e, menuEl);
+            }
+        },
+        sort: {
+            icon: 'sort',
+            label: 'Sort...',
+            onClick: (e) => {
+                const menuEl = document.querySelector('.context-menu');
+                showSortContextMenu(e, menuEl);
+            }
+        },
+        view: {
+            icon: 'view_list',
+            label: 'View...',
+            onClick: (e) => {
+                const menuEl = document.querySelector('.context-menu');
+                showViewContextMenu(e, menuEl);
+            }
+        },
+        sep: { type: 'separator' }
+    };
+    let items = [];
+    if (states.countSelected == 0) {
+        items.push(item.upload, item.createFolder, item.sep);
+        if (states.canPaste) {
+            items.push(item.paste, item.sep);
+        }
+        items.push(item.download, item.copyLink, item.sep, item.select, item.sort, item.view);
+    } else if (states.countSelected == 1) {
+        items.push(item.open, item.sep, item.cut, item.copy, item.rename, item.sep, item.delete, item.sep, item.download, item.copyLink);
+    } else {
+        items.push(item.cut, item.copy, item.sep, item.delete, item.sep, item.download, item.copyLink);
+    }
+    showContextMenu(e, items);
+};
+
+const handleKeyCombo = (combo) => {
+    const states = getActionStates();
+    if (combo === 'shift+n' && states.canCreateFolder) {
+        actions.createFolder();
+    } else if (combo === 'delete' && states.canDelete) {
+        actions.delete();
+    } else if (combo === 'backspace') {
+        btnNavUp.click();
+    } else if (combo === 'r') {
+        btnRefresh.click();
+    } else if ((combo === 'ctrl+x' || combo === 'meta+x') && states.canCut) {
+        actions.cut();
+    } else if ((combo === 'ctrl+c' || combo === 'meta+c') && states.canCopy) {
+        actions.copy();
+    } else if ((combo === 'ctrl+v' || combo === 'meta+v') && states.canPaste) {
+        actions.paste();
+    } else if (combo === 'shift+d' && states.canDownload) {
+        actions.download();
+    } else {
+        return false;
+    }
+    return true;
+};
+
+const browse = async (vault, path = '/', shouldPushState = true, selectFiles = []) => {
     setStatus('Loading files...');
     const isLoadedOld = isLoaded;
     isLoaded = false;
@@ -387,14 +644,6 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
         filesOnly.reverse();
     }
     const files = [...dirsOnly, ...filesOnly];
-    // Add .. to the top of the list
-    if (currentPath && currentPath !== '/') {
-        files.unshift({
-            name: '..',
-            isDirectory: true,
-            path: currentPath + '..',
-        });
-    }
     // Render file list
     elFiles.innerHTML = '';
     let i = 0;
@@ -404,7 +653,7 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
         const type = file.isDirectory ? 'folder' : (extensionTypes[ext] || 'file');
         // Create file element
         const elFile = document.createElement('button');
-        elFile.className = 'file btn btn-text d-flex gap-8 justify-start text-left';
+        elFile.className = `file btn ${deselectedFileClass} d-flex gap-8 justify-start text-left`;
         elFile.innerHTML = /*html*/`
             <span class="icon material-symbols-outlined type-${type} text-center flex-no-shrink"></span>
             <span class="name flex-grow text-clip-ellipses" data-tooltip-overflow="true"></span>
@@ -433,10 +682,14 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
             elDate.textContent = getRelativeTimestamp(file.modified);
             elDate.title = new Date(file.modified).toLocaleString();
         }
+        // Select file if specified
+        if (selectFiles.includes(file.path)) {
+            elFile.classList.add(selectedFileClass);
+            elFile.classList.remove(deselectedFileClass);
+        }
         // Handle file selection
         const index = i;
         elFile.addEventListener('click', async (e) => {
-            e.stopPropagation();
             const isSelected = elFile.classList.contains(selectedFileClass);
             if (e.shiftKey && lastSelectedFileIndex !== -1) {
                 // Shift selection logic
@@ -449,7 +702,7 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
                     btn.classList.add(selectedFileClass);
                     btn.classList.remove(deselectedFileClass);
                 }
-                updateActionButtons();
+                lastSelectedFileIndex = index;
             } else {
                 if (e.ctrlKey && isSelected) {
                     fileDeselect(file.path);
@@ -460,6 +713,7 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
                 fileSelect(file.path);
                 lastSelectedFileIndex = index;
             }
+            updateActionButtons();
         });
         // Handle file opening
         elFile.addEventListener('dblclick', async () => {
@@ -478,13 +732,7 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
         });
         // Handle context menu
         elFile.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            if (!elFile.classList.contains(selectedFileClass)) {
-                fileDeselectAll();
-                fileSelect(file.path);
-                lastSelectedFileIndex = index;
-            }
-            showFileContextMenu();
+            showFileContextMenu(e);
         });
         // Add to list
         elFiles.appendChild(elFile);
@@ -494,11 +742,7 @@ const browse = async (vault, path = '/', shouldPushState = true) => {
     isLoaded = true;
     updateActionButtons();
     // Set status
-    if (res.files.length === 0) {
-        setStatus('This folder is empty');
-    } else {
-        setStatus(`${res.files.length} file${res.files.length === 1 ? '' : 's'}`);
-    }
+    setStatus(`Loaded ${res.files.length} file${res.files.length === 1 ? '' : 's'}`);
 };
 
 const browseToCurrentPath = async () => {
@@ -534,6 +778,139 @@ const loadVaults = async () => {
         });
         elVaults.appendChild(elVault);
     }
+};
+
+const changeSort = (type, order) => {
+    if (sortType === type && !order) {
+        sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+    } else {
+        sortType = type;
+        sortOrder = order || 'asc';
+    }
+    elBrowser.dataset.sortType = sortType;
+    elBrowser.dataset.sortOrder = sortOrder;
+    browse(currentVault, currentPath, false);
+};
+
+const changeView = (type, size, hidden) => {
+    viewType = type || 'list';
+    viewSize = size || 'normal';
+    viewHidden = hidden || false;
+    elBrowser.dataset.viewType = viewType;
+    elBrowser.dataset.viewSize = viewSize;
+    elBrowser.dataset.viewHidden = viewHidden;
+    elFiles.classList.toggle('view-list', viewType === 'list');
+    elFiles.classList.toggle('view-grid', viewType === 'grid');
+    elFiles.classList.toggle('view-tiles', viewType === 'tiles');
+};
+
+const showSelectContextMenu = (event, element = btnActionSelect) => {
+    showContextMenu(event, [
+        {
+            label: 'Select all',
+            icon: 'select_all',
+            onClick: () => fileSelectAll()
+        },
+        {
+            label: 'Deselect all',
+            icon: 'deselect',
+            onClick: () => fileDeselectAll()
+        },
+        {
+            label: 'Invert selection',
+            icon: 'flip',
+            onClick: () => {
+                const fileEls = elFiles.querySelectorAll('.file');
+                fileEls.forEach(el => {
+                    if (el.classList.contains(selectedFileClass)) {
+                        el.classList.add(deselectedFileClass);
+                        el.classList.remove(selectedFileClass);
+                    } else {
+                        el.classList.add(selectedFileClass);
+                        el.classList.remove(deselectedFileClass);
+                    }
+                });
+                updateActionButtons();
+            }
+        }
+    ], { alignToElement: element });
+};
+
+const showSortContextMenu = (event, element = btnActionSort) => {
+    showContextMenu(event, [
+        {
+            label: 'A-Z',
+            icon: sortType === 'name' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('name', 'asc')
+        },
+        {
+            label: 'Z-A',
+            icon: sortType === 'name_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('name', 'desc')
+        },
+        {
+            label: 'Smallest to largest',
+            icon: sortType === 'size' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('size', 'asc')
+        },
+        {
+            label: 'Largest to smallest',
+            icon: sortType === 'size_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('size', 'desc')
+        },
+        {
+            label: 'Oldest to newest',
+            icon: sortType === 'date' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('date', 'asc')
+        },
+        {
+            label: 'Newest to oldest',
+            icon: sortType === 'date_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('date', 'desc')
+        }
+    ], { alignToElement: element });
+};
+
+const showViewContextMenu = (event, element = btnActionView) => {
+    showContextMenu(event, [
+        {
+            label: 'List',
+            icon: viewType === 'list' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView('list', viewSize, viewHidden)
+        },
+        {
+            label: 'Grid',
+            icon: viewType === 'grid' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView('grid', viewSize, viewHidden)
+        },
+        { type: 'separator' },
+        {
+            label: 'Compact',
+            icon: viewSize === 'small' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, 'small', viewHidden)
+        },
+        {
+            label: 'Comfy',
+            icon: viewSize === 'normal' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, 'normal', viewHidden)
+        },
+        {
+            label: 'Spacious',
+            icon: viewSize === 'large' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, 'large', viewHidden)
+        },
+        { type: 'separator' },
+        {
+            label: 'Hide hidden files',
+            icon: !viewHidden ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, viewSize, false)
+        },
+        {
+            label: 'Show hidden files',
+            icon: viewHidden ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, viewSize, true)
+        }
+    ], { alignToElement: element });
 };
 
 const updateNavButtons = () => {
@@ -633,15 +1010,68 @@ btnRefresh.addEventListener('click', async () => {
     await browse(currentVault, currentPath, false);
 });
 
+btnActionNewFolder.addEventListener('click', actions.createFolder);
+btnActionDelete.addEventListener('click', actions.delete);
+btnActionUpload.addEventListener('click', actions.uploadFiles);
+btnActionCut.addEventListener('click', actions.cut);
+btnActionCopy.addEventListener('click', actions.copy);
+btnActionPaste.addEventListener('click', actions.paste);
+btnActionRename.addEventListener('click', actions.rename);
+btnActionDownload.addEventListener('click', actions.download);
+btnActionCopyLink.addEventListener('click', actions.copyLink);
+btnActionSelect.addEventListener('click', (e) => showSelectContextMenu(e, btnActionSelect));
+btnActionSort.addEventListener('click', (e) => showSortContextMenu(e, btnActionSort));
+btnActionView.addEventListener('click', (e) => showViewContextMenu(e, btnActionView));
+
+btnSortName.addEventListener('click', () => {
+    changeSort('name');
+});
+btnSortSize.addEventListener('click', () => {
+    changeSort('size');
+});
+btnSortDate.addEventListener('click', () => {
+    changeSort('date');
+});
+
 elFiles.addEventListener('click', (e) => {
     if (e.target === elFiles) {
         fileDeselectAll();
     }
 });
 
+elFiles.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (e.target === elFiles) {
+        fileDeselectAll();
+        showFileContextMenu(e);
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    const keys = [];
+    if (e.ctrlKey || e.metaKey) keys.push('ctrl');
+    if (e.shiftKey) keys.push('shift');
+    if (e.altKey) keys.push('alt');
+    keys.push(e.key.toLowerCase());
+    const combo = keys.join('+');
+    // Ignore modifier keys
+    if (e.key.toLowerCase().match(/^(ctrl|shift|alt|meta)$/)) return;
+    // Ignore if not loaded
+    if (!isLoaded) return;
+    // Ignore if dialog is open
+    if (document.querySelector('dialog[open]')) return;
+    // Ignore if target is input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    console.log(`Key combo: ${combo}`);
+    const handled = handleKeyCombo(combo);
+    if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
+
 document.addEventListener('DOMContentLoaded', async () => {
     await init();
-    updateColorMode();
 });
 
 window.addEventListener('popstate', async () => {
