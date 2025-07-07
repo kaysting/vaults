@@ -29,38 +29,22 @@ const api = {
     delete: (url, params = {}) => apiRequest('delete', url, { params })
 };
 
-const pageLogin = document.querySelector('#login');
-const pageMain = document.querySelector('#main');
-const inputLoginUsername = document.querySelector('#loginUsername');
-const inputLoginPassword = document.querySelector('#loginPassword');
-const btnLogin = document.querySelector('#btnLogin');
-const loginFormText = document.querySelector('#loginCard .form-text');
-const btnLogout = document.querySelector('#btnLogout');
-const elUsername = document.querySelector('#sidebar .username');
-const elBreadcrumbs = document.querySelector('#breadcrumbs');
-const elVaults = document.querySelector('#sidebar .vaults');
-const elBrowser = document.querySelector('#browser');
-const elFiles = document.querySelector('#files');
-const elStatus = document.querySelector('#status');
-const btnNavBack = document.querySelector('#btnNavBack');
-const btnNavForward = document.querySelector('#btnNavForward');
-const btnNavUp = document.querySelector('#btnNavUp');
-const btnRefresh = document.querySelector('#btnRefresh');
-const btnActionUpload = document.querySelector('#btnActionUpload');
-const btnActionNewFolder = document.querySelector('#btnActionNewFolder');
-const btnActionCut = document.querySelector('#btnActionCut');
-const btnActionCopy = document.querySelector('#btnActionCopy');
-const btnActionPaste = document.querySelector('#btnActionPaste');
-const btnActionRename = document.querySelector('#btnActionRename');
-const btnActionDelete = document.querySelector('#btnActionDelete');
-const btnActionDownload = document.querySelector('#btnActionDownload');
-const btnActionCopyLink = document.querySelector('#btnActionCopyLink');
-const btnActionSelect = document.querySelector('#btnActionSelect');
-const btnActionSort = document.querySelector('#btnActionSort');
-const btnActionView = document.querySelector('#btnActionView');
-const btnSortName = document.querySelector('#btnSortName');
-const btnSortSize = document.querySelector('#btnSortSize');
-const btnSortDate = document.querySelector('#btnSortDate');
+const generateDownloadLink = async (vault, paths = []) => {
+    const resCreate = await api.post('/api/files/download/create', { vault });
+    const token = resCreate.token;
+    const resAdd = await api.post('/api/files/download/add', { token, vault }, { paths });
+    const resGet = await api.get('/api/files/download', { token });
+    const url = window.location.origin + resGet.url;
+    console.log(`Download link generated: ${url}`);
+    return url;
+};
+
+const startFileDownload = (url, name = '') => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+};
 
 const setStatus = (text, danger = false) => {
     elStatus.textContent = text;
@@ -122,121 +106,6 @@ const fileSelectAll = () => {
         el.classList.remove(deselectedFileClass);
     });
     updateActionButtons();
-};
-
-const extensionTypes = {
-    '3g2': 'video',
-    '3gp': 'video',
-    '7z': 'compressed',
-    'aac': 'audio',
-    'ai': 'image',
-    'aif': 'audio',
-    'apk': 'software',
-    'app': 'software',
-    'avi': 'video',
-    'bat': 'software',
-    'bmp': 'image',
-    'bz2': 'compressed',
-    'c': 'text',
-    'cpp': 'text',
-    'csv': 'text',
-    'css': 'text',
-    'dat': 'software',
-    'db': 'software',
-    'deb': 'software',
-    'dmg': 'software',
-    'doc': 'text',
-    'docx': 'text',
-    'dotx': 'text',
-    'eml': 'text',
-    'eps': 'image',
-    'exe': 'software',
-    'flac': 'audio',
-    'flv': 'video',
-    'gif': 'image',
-    'gz': 'compressed',
-    'h': 'text',
-    'heic': 'image',
-    'html': 'text',
-    'ico': 'image',
-    'ics': 'text',
-    'ini': 'text',
-    'iso': 'software',
-    'jar': 'software',
-    'java': 'text',
-    'jpeg': 'image',
-    'jpg': 'image',
-    'js': 'text',
-    'json': 'text',
-    'key': 'text',
-    'log': 'text',
-    'm4a': 'audio',
-    'm4v': 'video',
-    'md': 'text',
-    'mid': 'audio',
-    'midi': 'audio',
-    'mkv': 'video',
-    'mov': 'video',
-    'mp3': 'audio',
-    'mp4': 'video',
-    'mpeg': 'video',
-    'mpg': 'video',
-    'msi': 'software',
-    'odp': 'text',
-    'ods': 'text',
-    'odt': 'text',
-    'ogg': 'audio',
-    'otf': 'software',
-    'pdf': 'text',
-    'php': 'text',
-    'png': 'image',
-    'ppt': 'text',
-    'pptx': 'text',
-    'psd': 'image',
-    'py': 'text',
-    'rar': 'compressed',
-    'rb': 'text',
-    'rm': 'video',
-    'rom': 'software',
-    'rpm': 'software',
-    'rtf': 'text',
-    'sh': 'software',
-    'sql': 'text',
-    'sqlite': 'software',
-    'svg': 'image',
-    'swf': 'video',
-    'tar': 'compressed',
-    'tga': 'image',
-    'tif': 'image',
-    'tiff': 'image',
-    'toml': 'text',
-    'ttf': 'software',
-    'txt': 'text',
-    'vcf': 'text',
-    'wav': 'audio',
-    'webm': 'video',
-    'webp': 'image',
-    'wma': 'audio',
-    'wmv': 'video',
-    'woff': 'software',
-    'woff2': 'software',
-    'xls': 'text',
-    'xlsx': 'text',
-    'xml': 'text',
-    'xz': 'compressed',
-    'yaml': 'text',
-    'yml': 'text',
-    'zip': 'compressed'
-};
-const typeIcons = {
-    file: 'draft',
-    folder: 'folder',
-    text: 'description',
-    image: 'image',
-    audio: 'headphones',
-    video: 'movie',
-    compressed: 'folder_zip',
-    software: 'wysiwyg'
 };
 
 let username = '';
@@ -436,14 +305,37 @@ const actions = {
         console.log('Placeholder for rename');
     },
     download: async () => {
-        console.log('Placeholder for download');
+        const selectedFiles = getSelectedFiles();
+        const paths = selectedFiles.map(f => f.path);
+        if (paths.length === 0) paths.push(currentPath);
+        const url = await generateDownloadLink(currentVault, paths);
+        startFileDownload(url);
     },
     copyLink: async () => {
-        console.log('Placeholder for copyLink');
-    },
-    open: async () => {
         const selectedFiles = getSelectedFiles();
-        selectedFiles[0].el.dispatchEvent(new Event('dblclick'));
+        const paths = selectedFiles.map(f => f.path);
+        if (paths.length === 0) paths.push(currentPath);
+        const url = await generateDownloadLink(currentVault, paths);
+        navigator.clipboard.writeText(url).then(() => {
+            showToast({
+                type: 'success',
+                icon: 'check_circle',
+                message: `Download link copied to clipboard!`
+            });
+        }).catch(err => {
+            showToast({
+                type: 'danger',
+                icon: 'error',
+                message: `Failed to copy download link. Here it is: ${url}`
+            });
+        });
+    },
+    open: async (file) => {
+        if (file.isDirectory) {
+            return await browse(currentVault, file.path);
+        }
+        const url = await generateDownloadLink(currentVault, [file.path]);
+        startFileDownload(url, file.name);
     }
 };
 
@@ -551,6 +443,8 @@ const handleKeyCombo = (combo) => {
         btnNavUp.click();
     } else if (combo === 'r') {
         btnRefresh.click();
+    } else if ((combo === 'ctrl+a' || combo === 'meta+a') && states.canSelect) {
+        fileSelectAll();
     } else if ((combo === 'ctrl+x' || combo === 'meta+x') && states.canCut) {
         actions.cut();
     } else if ((combo === 'ctrl+c' || combo === 'meta+c') && states.canCopy) {
@@ -716,18 +610,12 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
             updateActionButtons();
         });
         // Handle file opening
-        elFile.addEventListener('dblclick', async () => {
-            if (file.isDirectory) {
-                await browse(vault, `${res.path}/${file.name}`);
-            } else {
-                const resDownload = await api.post('/api/files/download', {
-                    vault, path: file.path
-                });
-                const a = document.createElement('a');
-                a.href = `/download/${resDownload.token}`;
-                a.download = file.name;
-                a.target = '_blank';
-                a.click();
+        elFile.addEventListener('dblclick', () => actions.open(file));
+        elFile.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                actions.open(file);
             }
         });
         // Handle context menu

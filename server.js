@@ -4,8 +4,25 @@ const crypto = require('crypto');
 const express = require('express');
 const sqlite3 = require('better-sqlite3');
 const bcrypt = require('bcrypt');
+const archiver = require('archiver');
 
 const config = require('./config.json');
+
+const log = (level, message, details = {}) => {
+    const timestamp = new Date().toISOString();
+    let userIdentifier = details.ip || 'SYSTEM';
+    if (details.username && details.ip) {
+        userIdentifier = `${details.ip} as ${details.username}`;
+    } else if (details.username) {
+        userIdentifier = details.username;
+    }
+    const logMessage = `[${timestamp}] [${level.toUpperCase()}] [${userIdentifier}] ${message}`;
+    if (level === 'error' && details.error) {
+        console.error(logMessage, details.error);
+    } else {
+        console.log(logMessage);
+    }
+};
 
 const db = sqlite3(path.join(__dirname, 'state.db'));
 
@@ -19,9 +36,15 @@ db.prepare(`CREATE TABLE IF NOT EXISTS downloads (
     token TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     vault TEXT NOT NULL,
-    path TEXT NOT NULL,
     created INTEGER NOT NULL
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS download_files (
+    token TEXT NOT NULL,
+    path TEXT NOT NULL,
+    PRIMARY KEY (token, path),
+    FOREIGN KEY (token) REFERENCES downloads(token) ON DELETE CASCADE
+)`).run();
+db.pragma('foreign_keys = ON');
 
 const getSecureRandomHex = (length) => {
     return crypto.randomBytes(length).toString('hex').slice(0, length);
@@ -33,7 +56,7 @@ const expireOldSessions = () => {
     const stmt = db.prepare(`DELETE FROM sessions WHERE accessed < ?`);
     const changes = stmt.run(now - expiryMs).changes;
     if (changes > 0) {
-        console.log(`Removed ${changes} unused sessions`);
+        log('info', `Removed ${changes} unused sessions`);
     }
 };
 
@@ -43,7 +66,7 @@ const expireOldDownloads = () => {
     const stmt = db.prepare(`DELETE FROM downloads WHERE created < ?`);
     const changes = stmt.run(now - expiryMs).changes;
     if (changes > 0) {
-        console.log(`Removed ${changes} old download links`);
+        log('info', `Removed ${changes} old download links`);
     }
 };
 
@@ -60,8 +83,20 @@ app.use(express.raw({ limit: '16mb', type: 'application/octet-stream' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use((req, res, next) => {
+    const start = Date.now();
     const ip = req.headers['cf-connecting-ip'] || req.socket.remoteAddress || 'unknown';
-    req.ip = ip;
+    req.ipaddr = ip;
+    res.on('finish', () => {
+        if (req.originalUrl.startsWith('/api')) {
+            const duration = Date.now() - start;
+            const username = req.username || (req.session ? req.session.username : undefined);
+            const details = { ip };
+            if (username) {
+                details.username = username;
+            }
+            log('info', `[${duration}ms] ${req.method} ${res.statusCode} ${req.originalUrl}`, details);
+        }
+    });
     next();
 });
 
@@ -77,11 +112,10 @@ app.post('/api/auth/login', async (req, res) => {
             const now = Date.now();
             db.prepare(`INSERT INTO sessions (token, username, created, accessed) VALUES (?, ?, ?, ?)`)
                 .run(token, username, now, now);
-            console.log(`${req.ip} established a new session as ${username}`);
+            req.username = username;
             return res.json({ success: true, token });
         }
     }
-    console.log(`${req.ip} tried and failed to authenticate as ${username}`);
     res.status(401).json({ success: false, message: 'Invalid username or password' });
 });
 
@@ -117,7 +151,6 @@ app.get('/api/vaults', requireAuth, (req, res) => {
             });
         }
     }
-    console.log(`${req.username} requested a list of their vaults`);
     res.json({ success: true, vaults });
 });
 
@@ -169,7 +202,6 @@ app.get('/api/files/list', requireAuth, requireVaultAccess, getRequestPaths, asy
             modified: stats.mtimeMs || Date.now()
         });
     }
-    console.log(`${req.username} requested a file list in vault ${req.vault.name} at path ${req.pathRel}`);
     res.json({ success: true, path: req.pathRel, files });
 });
 
@@ -185,9 +217,9 @@ app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, 
         } else {
             await fs.promises.unlink(req.pathAbs);
         }
-        console.log(`${req.username} deleted file ${req.pathAbs}`);
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
+        log('error', `Failed to delete ${req.pathRel} from vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error: err });
         res.status(500).json({ success: false, message: 'Failed to delete file or directory' });
     }
 });
@@ -217,7 +249,6 @@ const handleMoveCopy = async (req, res, action) => {
     try {
         if (action === 'move') {
             await fs.promises.rename(pathFrom.abs, pathTo.abs);
-            console.log(`${req.username} moved file from ${pathFrom.abs} to ${pathTo.abs}`);
             res.json({ success: true, oldPath: pathFrom.rel, newPath: pathTo.rel });
         } else if (action === 'copy') {
             const copyRecursive = async (src, dest) => {
@@ -236,10 +267,10 @@ const handleMoveCopy = async (req, res, action) => {
                 }
             };
             await copyRecursive(pathFrom.abs, pathTo.abs);
-            console.log(`${req.username} copied from ${pathFrom.abs} to ${pathTo.abs}`);
             res.json({ success: true, srcPath: pathFrom.rel, destPath: pathTo.rel });
         }
     } catch (error) {
+        log('error', `Failed to ${action} file from ${pathFrom.rel} to ${pathTo.rel} in vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error });
         res.status(500).json({ success: false, message: `Failed to ${action} file: ${error}` });
     }
 };
@@ -258,10 +289,9 @@ app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequest
     }
     try {
         await fs.promises.mkdir(req.pathAbs, { recursive: true });
-        console.log(`${req.username} created a folder at ${req.pathAbs}`);
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
-        console.error('Error creating folder:', err);
+        log('error', `Error creating folder at ${req.pathRel} in vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error: err });
         res.status(500).json({ success: false, message: 'Failed to create folder' });
     }
 });
@@ -278,7 +308,6 @@ app.post('/api/files/upload/initialize', requireAuth, requireVaultAccess, getReq
         pathDest: req.pathAbs,
         pendingSize: 0
     };
-    console.log(`${req.username} initiated an upload (${uploadToken}) with destination ${req.pathAbs}`);
     res.json({ success: true, token: uploadToken });
 });
 
@@ -301,10 +330,11 @@ app.post('/api/files/upload/append', requireAuth, async (req, res) => {
         await fs.promises.mkdir(path.dirname(uploadInfo.pathTemp), { recursive: true });
         await fs.promises.appendFile(uploadInfo.pathTemp, req.body);
         uploadInfo.pendingSize += req.body.length;
-        console.log(`${req.username} uploaded ${req.body.length} bytes to ${uploadToken}`);
+        // This log can be noisy, so let's not log every chunk. Or maybe keep it but as debug level if we had levels.
+        // log('info', `Uploaded ${req.body.length} bytes to ${uploadToken}`, { ip: req.ipaddr, username: req.username });
         res.json({ success: true, size: uploadInfo.pendingSize });
     } catch (err) {
-        console.error('Error during file upload:', err);
+        log('error', `Error during file upload chunk for ${uploadToken}`, { ip: req.ipaddr, username: req.username, error: err });
         return res.status(500).json({ success: false, message: 'Failed to upload file' });
     }
 });
@@ -321,46 +351,156 @@ app.post('/api/files/upload/finalize', requireAuth, async (req, res) => {
     try {
         await fs.promises.rename(uploadInfo.pathTemp, uploadInfo.pathDest);
         delete uploads[uploadToken];
-        console.log(`${req.username} finalized upload (${uploadToken}) to ${uploadInfo.pathDest}`);
         res.json({ success: true });
     } catch (err) {
-        console.error('Error finalizing file upload:', err);
+        log('error', `Error finalizing file upload for ${uploadToken}`, { ip: req.ipaddr, username: req.username, error: err });
         return res.status(500).json({ success: false, message: 'Failed to finalize file upload' });
     }
 });
 
-app.post('/api/files/download', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
-    if (!fs.existsSync(req.pathAbs)) {
-        return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
-    }
-    const stats = await fs.promises.stat(req.pathAbs).catch(() => { return {}; });
-    if (!stats.isFile()) {
-        return res.status(400).json({ success: false, message: 'The file at the requested path is not a file' });
-    }
+app.post('/api/files/download/create', requireAuth, requireVaultAccess, async (req, res) => {
     const downloadToken = getSecureRandomHex(16);
-    const now = Date.now();
-    db.prepare(`INSERT INTO downloads (token, username, vault, path, created) VALUES (?, ?, ?, ?, ?)`)
-        .run(downloadToken, req.username, req.vault.name, req.pathRel, now);
-    console.log(`${req.username} created a download link (${downloadToken}) for file ${req.pathRel} in vault ${req.vault.name}`);
+    db.prepare(`INSERT INTO downloads (token, username, vault, created) VALUES (?, ?, ?, ?)`)
+        .run(downloadToken, req.username, req.vault.name, Date.now());
     res.json({ success: true, token: downloadToken });
 });
 
-app.get('/download/:token{/:filename}', (req, res) => {
+app.post('/api/files/download/add', requireAuth, requireVaultAccess, async (req, res) => {
+    const token = req.query.token;
+    const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
+    if (!download) {
+        return res.status(404).json({ success: false, message: 'Invalid or expired download token' });
+    }
+    const paths = req.body.paths;
+    if (!Array.isArray(paths) || paths.length === 0) {
+        return res.status(400).json({ success: false, message: 'No paths provided' });
+    }
+    const pathsClean = [];
+    for (const pathRelDirty of paths) {
+        const path = getCleanPaths(req.vault, pathRelDirty);
+        if (!fs.existsSync(path.abs)) {
+            return res.status(404).json({ success: false, message: `File not found in vault ${req.vault}: ${pathRelDirty}` });
+        }
+        pathsClean.push(path);
+    }
+    for (const path of pathsClean) {
+        db.prepare(`INSERT OR IGNORE INTO download_files (token, path) VALUES (?, ?)`)
+            .run(token, path.rel);
+    }
+    res.json({ success: true });
+});
+
+app.get('/api/files/download', async (req, res) => {
+    const token = req.query.token;
+    const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
+    if (!download) {
+        return res.status(404).json({ success: false, message: 'Invalid or expired download token' });
+    }
+    const paths = db.prepare(`SELECT path FROM download_files WHERE token = ?`).all(token);
+    if (paths.length === 0) {
+        return res.status(404).json({ success: false, message: 'No files associated with this download' });
+    }
+    const vault = config.vaults.find(v => v.name === download.vault);
+    if (!vault) {
+        return res.status(404).json({ success: false, message: 'The vault this file belongs to no longer exists' });
+    }
+    let url = `/download/${download.token}`;
+    if (paths.length === 1) {
+        const pathRel = paths[0].path;
+        const pathAbs = path.join(vault.path, pathRel);
+        const stats = await fs.promises.stat(pathAbs).catch(() => { return null; });
+        if (!stats) {
+            return res.status(404).json({ success: false, message: 'The file this download link points to no longer exists' });
+        }
+        let name = path.basename(pathRel) || vault.name;
+        if (stats.isDirectory()) {
+            name = `${name}.zip`;
+        }
+        return res.json({
+            success: true,
+            url: url + '/' + name
+        });
+    } else {
+        return res.json({
+            success: true,
+            url: url + '/files.zip',
+        });
+    }
+});
+
+app.get('/download/:token{/:filename}', async (req, res) => {
     const token = req.params.token;
     const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
     if (!download) {
         return res.status(404).end('This download link has expired or invalid');
     }
+    let paths = db.prepare(`SELECT path FROM download_files WHERE token = ?`).all(token).map(row => row.path);
+    if (paths.length === 0) {
+        return res.status(404).end('This download has no files associated with it');
+    }
     const vault = config.vaults.find(v => v.name === download.vault);
     if (!vault) {
         return res.status(404).end('The vault this file belongs to no longer exists');
     }
-    const filePathAbs = path.join(vault.path, download.path);
-    if (!fs.existsSync(filePathAbs)) {
-        return res.status(404).end('The file this download link points to no longer exists');
+    let filename = 'files';
+    if (paths.length === 1) {
+        const pathRel = paths[0];
+        const pathAbs = path.join(vault.path, pathRel);
+        const stats = await fs.promises.stat(pathAbs).catch(() => { return null; });
+        if (!stats) {
+            return res.status(404).json({ success: false, message: 'The file this download link points to no longer exists' });
+        }
+        filename = path.basename(pathRel);
+        if (stats.isDirectory()) {
+            paths = [];
+            const files = await fs.promises.readdir(pathAbs).catch(() => []);
+            for (const file of files) {
+                paths.push(path.join(pathRel, file));
+            }
+        } else {
+            return res.download(pathAbs, filename, { dotfiles: 'allow' });
+        }
     }
-    console.log(`${req.ip} requested download link ${token} for file ${download.path} in vault ${vault.name}`);
-    res.download(filePathAbs);
+    filename = `${filename || vault.name}.zip`;
+    log('info', `Starting zip download for ${paths.length} items from vault ${vault.name}`, { ip: req.ipaddr, username: download.username });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const archive = archiver('zip');
+    archive.on('warning', (err) => {
+        if (err.code === 'ENOENT') {
+            log('warn', `Archiver warning: ${err.message}`, { ip: req.ipaddr, username: download.username });
+        } else {
+            log('error', `Archiver error: ${err.message}`, { ip: req.ipaddr, username: download.username, error: err });
+            res.status(500).send({ success: false, message: err.message });
+        }
+    });
+    archive.on('error', (err) => {
+        log('error', `Archiver error during zip creation: ${err.message}`, { ip: req.ipaddr, username: download.username, error: err });
+        res.status(500).send({ success: false, message: err.message });
+    });
+    archive.on('finish', () => {
+        log('info', `Finished zip download for token ${token}`, { ip: req.ipaddr, username: download.username });
+    });
+    req.on('close', () => {
+        if (res.writableFinished) return;
+        log('info', `Client disconnected, aborting zip download for token ${token}`, { ip: req.ipaddr, username: download.username });
+        archive.abort();
+    });
+    archive.pipe(res);
+    for (const pathRel of paths) {
+        const pathAbs = path.join(vault.path, pathRel);
+        if (!fs.existsSync(pathAbs)) {
+            log('warn', `File not found during zip creation, skipping: ${pathAbs}`, { ip: req.ipaddr, username: download.username });
+            continue;
+        }
+        const stats = await fs.promises.stat(pathAbs);
+        if (stats.isDirectory()) {
+            archive.directory(pathAbs, path.basename(pathRel));
+        } else {
+            archive.file(pathAbs, { name: path.basename(pathRel) });
+        }
+    }
+    archive.finalize();
 });
 
 app.use((req, res) => {
@@ -368,11 +508,11 @@ app.use((req, res) => {
 });
 
 app.listen(config.server.port, () => {
-    console.log(`Server is running on port ${config.server.port}`);
+    log('info', `Server is running on port ${config.server.port}`);
 });
 
 process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
+    log('error', 'Uncaught Exception:', { error: err });
     db.close();
     process.exit(1);
 });
