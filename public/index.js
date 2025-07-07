@@ -331,7 +331,7 @@ const actions = {
                 preventClose: true,
                 onClick: async () => {
                     try {
-                        const res = await api.post('/api/files/folder', {
+                        const res = await api.post('/api/files/folder/create', {
                             vault: currentVault,
                             path: currentPath + '/' + elInput.value
                         });
@@ -393,7 +393,7 @@ const actions = {
                     for (const file of selectedFiles) {
                         try {
                             toast.updateMessage(`Deleting ${file.path.split('/').pop()} (${i + 1}/${selectedFiles.length})...`);
-                            await api.delete('/api/files', {
+                            await api.post('/api/files/delete', {
                                 vault: currentVault,
                                 path: file.path
                             });
@@ -572,7 +572,7 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
     updateActionButtons();
     let res;
     try {
-        res = await api.get('/api/files', { vault, path });
+        res = await api.get('/api/files/list', { vault, path });
     } catch (error) {
         setStatus(error, true);
         isLoaded = isLoadedOld;
@@ -720,7 +720,7 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
             if (file.isDirectory) {
                 await browse(vault, `${res.path}/${file.name}`);
             } else {
-                const resDownload = await api.get('/api/files/download', {
+                const resDownload = await api.post('/api/files/download', {
                     vault, path: file.path
                 });
                 const a = document.createElement('a');
@@ -963,7 +963,7 @@ btnLogin.addEventListener('click', async (e) => {
         return;
     }
     try {
-        const res = await api.post('/api/auth', {}, { username, password });
+        const res = await api.post('/api/auth/login', {}, { username, password });
         authToken = res.token;
         localStorage.setItem('token', authToken);
         await init();
@@ -976,7 +976,7 @@ btnLogin.addEventListener('click', async (e) => {
 });
 
 btnLogout.addEventListener('click', async (e) => {
-    await api.delete('/api/auth');
+    await api.post('/api/auth/logout');
     localStorage.removeItem('token');
     authToken = null;
     await init();

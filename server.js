@@ -65,7 +65,7 @@ app.use((req, res, next) => {
     next();
 });
 
-app.post('/api/auth', async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
     const username = req.body.username;
     const password = req.body.password;
     if (!username || !password) {
@@ -98,7 +98,7 @@ const requireAuth = (req, res, next) => {
     res.status(401).json({ success: false, message: 'Unauthorized' });
 };
 
-app.delete('/api/auth', requireAuth, (req, res) => {
+app.post('/api/auth/logout', requireAuth, (req, res) => {
     db.prepare(`DELETE FROM sessions WHERE token = ?`).run(req.token);
     res.json({ success: true });
 });
@@ -147,7 +147,7 @@ const getRequestPaths = (req, res, next) => {
     return next();
 };
 
-app.get('/api/files', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.get('/api/files/list', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (!fs.existsSync(req.pathAbs)) {
         return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
     }
@@ -173,7 +173,7 @@ app.get('/api/files', requireAuth, requireVaultAccess, getRequestPaths, async (r
     res.json({ success: true, path: req.pathRel, files });
 });
 
-app.delete('/api/files', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (!fs.existsSync(req.pathAbs)) {
         return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
     }
@@ -192,73 +192,67 @@ app.delete('/api/files', requireAuth, requireVaultAccess, getRequestPaths, async
     }
 });
 
-app.put('/api/files/move', requireAuth, requireVaultAccess, async (req, res) => {
-    const pathOld = getCleanPaths(req.vault, req.query.path_old);
-    const pathNew = getCleanPaths(req.vault, req.query.path_new);
-    if (!fs.existsSync(pathOld.abs)) {
+const handleMoveCopy = async (req, res, action) => {
+    let pathFrom, pathTo;
+    if (req.query.path_src && req.query.path_dest) {
+        pathFrom = getCleanPaths(req.vault, req.query.path_src);
+        pathTo = getCleanPaths(req.vault, req.query.path_dest);
+    } else {
+        return res.status(400).json({ success: false, message: 'Missing path_src or path_dest' });
+    }
+
+    if (!fs.existsSync(pathFrom.abs)) {
         return res.status(404).json({ success: false, message: 'Source file does not exist' });
     }
-    if (fs.existsSync(pathNew.abs)) {
+    if (fs.existsSync(pathTo.abs)) {
         return res.status(400).json({ success: false, message: 'Destination file already exists' });
     }
-    if (pathOld.rel === pathNew.rel) {
+    if (pathFrom.rel === pathTo.rel) {
         return res.status(400).json({ success: false, message: 'Source and destination paths are the same' });
     }
-    if (pathOld.rel === '/' || pathNew.rel === '/') {
+    if (pathFrom.rel === '/' || pathTo.rel === '/') {
         return res.status(400).json({ success: false, message: 'The root directory itself cannot be modified' });
     }
+
     try {
-        await fs.promises.rename(pathOld.abs, pathNew.abs);
-        console.log(`${req.username} moved file from ${pathOld.abs} to ${pathNew.abs}`);
-        res.json({ success: true, oldPath: pathOld.rel, newPath: pathNew.rel });
-    } catch (err) {
-        res.status(500).json({ success: false, message: `Failed to move file: ${error}` });
-    }
-});
-
-app.put('/api/files/copy', requireAuth, requireVaultAccess, async (req, res) => {
-    const pathSrc = getCleanPaths(req.vault, req.query.path_src);
-    const pathDest = getCleanPaths(req.vault, req.query.path_dest);
-
-    if (!fs.existsSync(pathSrc.abs)) {
-        return res.status(404).json({ success: false, message: 'Source file does not exist' });
-    }
-    if (fs.existsSync(pathDest.abs)) {
-        return res.status(400).json({ success: false, message: 'Destination file already exists' });
-    }
-    if (pathSrc.rel === pathDest.rel) {
-        return res.status(400).json({ success: false, message: 'Source and destination paths are the same' });
-    }
-    if (pathSrc.rel === '/' || pathDest.rel === '/') {
-        return res.status(400).json({ success: false, message: 'The root directory itself cannot be modified' });
-    }
-
-    const copyRecursive = async (src, dest) => {
-        const stats = await fs.promises.stat(src);
-        if (stats.isDirectory()) {
-            await fs.promises.mkdir(dest, { recursive: true });
-            const entries = await fs.promises.readdir(src);
-            for (const entry of entries) {
-                await copyRecursive(
-                    path.join(src, entry),
-                    path.join(dest, entry)
-                );
-            }
-        } else {
-            await fs.promises.copyFile(src, dest);
+        if (action === 'move') {
+            await fs.promises.rename(pathFrom.abs, pathTo.abs);
+            console.log(`${req.username} moved file from ${pathFrom.abs} to ${pathTo.abs}`);
+            res.json({ success: true, oldPath: pathFrom.rel, newPath: pathTo.rel });
+        } else if (action === 'copy') {
+            const copyRecursive = async (src, dest) => {
+                const stats = await fs.promises.stat(src);
+                if (stats.isDirectory()) {
+                    await fs.promises.mkdir(dest, { recursive: true });
+                    const entries = await fs.promises.readdir(src);
+                    for (const entry of entries) {
+                        await copyRecursive(
+                            path.join(src, entry),
+                            path.join(dest, entry)
+                        );
+                    }
+                } else {
+                    await fs.promises.copyFile(src, dest);
+                }
+            };
+            await copyRecursive(pathFrom.abs, pathTo.abs);
+            console.log(`${req.username} copied from ${pathFrom.abs} to ${pathTo.abs}`);
+            res.json({ success: true, srcPath: pathFrom.rel, destPath: pathTo.rel });
         }
-    };
-
-    try {
-        await copyRecursive(pathSrc.abs, pathDest.abs);
-        console.log(`${req.username} copied from ${pathSrc.abs} to ${pathDest.abs}`);
-        res.json({ success: true, srcPath: pathSrc.rel, destPath: pathDest.rel });
     } catch (error) {
-        res.status(500).json({ success: false, message: `Failed to copy file: ${error}` });
+        res.status(500).json({ success: false, message: `Failed to ${action} file: ${error}` });
     }
+};
+
+app.post('/api/files/move', requireAuth, requireVaultAccess, async (req, res) => {
+    await handleMoveCopy(req, res, 'move');
 });
 
-app.post('/api/files/folder', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.post('/api/files/copy', requireAuth, requireVaultAccess, async (req, res) => {
+    await handleMoveCopy(req, res, 'copy');
+});
+
+app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (fs.existsSync(req.pathAbs)) {
         return res.status(400).json({ success: false, message: 'A file or folder already exists at the requested path' });
     }
@@ -274,7 +268,7 @@ app.post('/api/files/folder', requireAuth, requireVaultAccess, getRequestPaths, 
 
 const uploads = {};
 
-app.get('/api/files/upload', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.post('/api/files/upload/initialize', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (fs.existsSync(req.pathAbs)) {
         return res.status(400).json({ success: false, message: 'A file already exists at the requested path' });
     }
@@ -288,7 +282,7 @@ app.get('/api/files/upload', requireAuth, requireVaultAccess, getRequestPaths, a
     res.json({ success: true, token: uploadToken });
 });
 
-app.put('/api/files/upload', requireAuth, async (req, res) => {
+app.post('/api/files/upload/append', requireAuth, async (req, res) => {
     const uploadToken = req.query.token;
     if (!uploads[uploadToken]) {
         return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
@@ -315,7 +309,7 @@ app.put('/api/files/upload', requireAuth, async (req, res) => {
     }
 });
 
-app.post('/api/files/upload', requireAuth, async (req, res) => {
+app.post('/api/files/upload/finalize', requireAuth, async (req, res) => {
     const uploadToken = req.body.token;
     if (!uploads[uploadToken]) {
         return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
@@ -335,7 +329,7 @@ app.post('/api/files/upload', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/files/download', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.post('/api/files/download', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (!fs.existsSync(req.pathAbs)) {
         return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
     }
