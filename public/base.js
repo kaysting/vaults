@@ -9,10 +9,10 @@ const roundSmart = (num) => {
 };
 
 const formatBytes = bytes => {
-    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB'];
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
     let i = 0;
-    while (bytes >= 1024 && i < units.length - 1) {
-        bytes /= 1024;
+    while (bytes >= 1000 && i < units.length - 1) {
+        bytes /= 1000;
         i++;
     }
     return `${roundSmart(bytes)} ${units[i]}`;
@@ -52,7 +52,32 @@ const isElementOverflowing = (el) => {
     );
 };
 
+const systemFilePicker = async (multiple = false, folder = false) => {
+    return new Promise((resolve, reject) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.multiple = multiple;
+        input.accept = '*/*';
+        if (folder) {
+            input.webkitdirectory = true;
+            input.directory = true;
+        }
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        input.addEventListener('change', () => {
+            resolve(Array.from(input.files));
+            document.body.removeChild(input);
+        });
+        input.click();
+    });
+};
 
+const startFileDownload = (url, name = '') => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+};
 
 // --- CONTEXT MENU ---
 let activeContextMenu = null;
@@ -276,6 +301,10 @@ function showToast({ message, type = 'info', icon, duration = 5000, progressBar 
 
     container.appendChild(toast);
 
+    // Track progress for progressBar to prevent auto-close if not finished
+    let progressPercent = progressBar ? 0 : 100;
+    let autoCloseTimeout = null;
+
     const closeToast = () => {
         toast.classList.add('is-closing');
         toast.addEventListener('animationend', () => {
@@ -300,15 +329,25 @@ function showToast({ message, type = 'info', icon, duration = 5000, progressBar 
         }
     });
 
-    if (!persistent) {
-        setTimeout(closeToast, duration);
-    }
+    // Only auto-close if not persistent and either no progressBar or progressBar is complete
+    const maybeAutoClose = () => {
+        if (!persistent && (!progressBar || progressPercent >= 100)) {
+            autoCloseTimeout = setTimeout(closeToast, duration);
+        }
+    };
+
+    maybeAutoClose();
 
     return {
         updateProgress: (percent) => {
+            progressPercent = percent;
             const bar = toast.querySelector('.toast-progress-bar');
             if (bar) {
                 bar.style.width = `${percent}%`;
+            }
+            // If progress reaches 100%, start auto-close timer if not already started
+            if (progressBar && percent >= 100 && !persistent && !autoCloseTimeout) {
+                autoCloseTimeout = setTimeout(closeToast, duration);
             }
         },
         updateMessage: (newMessage) => {

@@ -104,6 +104,7 @@ const extensionTypes = {
     'yml': 'text',
     'zip': 'compressed'
 };
+
 const typeIcons = {
     file: 'draft',
     folder: 'folder',
@@ -114,3 +115,6 @@ const typeIcons = {
     compressed: 'folder_zip',
     software: 'wysiwyg'
 };
+
+const selectedFileClass = 'btn-tonal';
+const deselectedFileClass = 'btn-text';

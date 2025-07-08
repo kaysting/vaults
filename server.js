@@ -44,6 +44,13 @@ db.prepare(`CREATE TABLE IF NOT EXISTS download_files (
     PRIMARY KEY (token, path),
     FOREIGN KEY (token) REFERENCES downloads(token) ON DELETE CASCADE
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS uploads (
+    token TEXT NOT NULL,
+    username TEXT NOT NULL,
+    vault TEXT NOT NULL,
+    path_temp TEXT NOT NULL,
+    path_dest TEXT NOT NULL
+)`).run();
 db.pragma('foreign_keys = ON');
 
 const getSecureRandomHex = (length) => {
@@ -209,10 +216,12 @@ app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, 
     if (!fs.existsSync(req.pathAbs)) {
         return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
     }
+    if (!req.pathRel || req.pathRel === '/') {
+        return res.status(400).json({ success: false, message: 'The root directory itself cannot be deleted' });
+    }
     try {
         const stats = await fs.promises.lstat(req.pathAbs);
         if (stats.isDirectory()) {
-            // Remove directory and all contents
             await fs.promises.rm(req.pathAbs, { recursive: true, force: true });
         } else {
             await fs.promises.unlink(req.pathAbs);
@@ -296,70 +305,91 @@ app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequest
     }
 });
 
-const uploads = {};
-
-app.post('/api/files/upload/initialize', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (fs.existsSync(req.pathAbs)) {
         return res.status(400).json({ success: false, message: 'A file already exists at the requested path' });
     }
-    const uploadToken = getSecureRandomHex(16);
-    uploads[uploadToken] = {
-        pathTemp: path.join(config.server.pending_uploads_dir, uploadToken),
-        pathDest: req.pathAbs,
-        pendingSize: 0
-    };
+    const uploadToken = getSecureRandomHex(8);
+    const tempFilePath = `${req.pathAbs}.${uploadToken}`;
+    db.prepare(`INSERT INTO uploads (token, username, vault, path_temp, path_dest) VALUES (?, ?, ?, ?, ?)`)
+        .run(uploadToken, req.username, req.vault.name, tempFilePath, req.pathAbs);
     res.json({ success: true, token: uploadToken });
 });
 
-app.post('/api/files/upload/append', requireAuth, async (req, res) => {
-    const uploadToken = req.query.token;
-    if (!uploads[uploadToken]) {
+app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) => {
+    const token = req.query.token;
+    if (!token) {
+        return res.status(400).json({ success: false, message: 'Missing upload token' });
+    }
+    const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
+    if (!upload) {
         return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
     }
-    const uploadInfo = uploads[uploadToken];
     if (!req.is('application/octet-stream')) {
         return res.status(400).json({ success: false, message: 'Invalid content type, expected application/octet-stream' });
     }
-    if (req.body.length === 0) {
+    if (!req.body || req.body.length === 0) {
         return res.status(400).json({ success: false, message: 'No data provided in the request body' });
     }
-    if (uploadInfo.pendingSize + req.body.length > config.server.max_upload_size_gb * 1024 * 1024 * 1024) {
-        return res.status(413).json({ success: false, message: 'Upload exceeds maximum size limit' });
-    }
+    const tempFilePath = upload.path_temp;
     try {
-        await fs.promises.mkdir(path.dirname(uploadInfo.pathTemp), { recursive: true });
-        await fs.promises.appendFile(uploadInfo.pathTemp, req.body);
-        uploadInfo.pendingSize += req.body.length;
-        // This log can be noisy, so let's not log every chunk. Or maybe keep it but as debug level if we had levels.
-        // log('info', `Uploaded ${req.body.length} bytes to ${uploadToken}`, { ip: req.ipaddr, username: req.username });
-        res.json({ success: true, size: uploadInfo.pendingSize });
+        await fs.promises.mkdir(path.dirname(tempFilePath), { recursive: true });
+        await fs.promises.appendFile(tempFilePath, req.body);
+        res.json({ success: true });
     } catch (err) {
-        log('error', `Error during file upload chunk for ${uploadToken}`, { ip: req.ipaddr, username: req.username, error: err });
-        return res.status(500).json({ success: false, message: 'Failed to upload file' });
+        log('error', `Error during file upload chunk for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
+        return res.status(500).json({ success: false, message: 'Failed to upload file chunk' });
     }
 });
 
-app.post('/api/files/upload/finalize', requireAuth, async (req, res) => {
-    const uploadToken = req.body.token;
-    if (!uploads[uploadToken]) {
+app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (req, res) => {
+    const token = req.query.token;
+    const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
+    if (!upload) {
         return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
     }
-    const uploadInfo = uploads[uploadToken];
-    if (uploadInfo.pendingSize === 0) {
-        return res.status(400).json({ success: false, message: 'No data uploaded for this token' });
+    const tempFilePath = upload.path_temp;
+    if (!fs.existsSync(tempFilePath)) {
+        return res.status(400).json({ success: false, message: 'No data has been uploaded' });
+    }
+    if (fs.existsSync(upload.path_dest)) {
+        return res.status(400).json({ success: false, message: 'A file already exists at the destination path' });
     }
     try {
-        await fs.promises.rename(uploadInfo.pathTemp, uploadInfo.pathDest);
-        delete uploads[uploadToken];
-        res.json({ success: true });
+        await fs.promises.mkdir(path.dirname(upload.path_dest), { recursive: true });
+        await fs.promises.rename(tempFilePath, upload.path_dest);
+        db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+        const paths = getCleanPaths(req.vault, upload.path_dest.replace(req.vault.path, ''));
+        res.json({ success: true, path: paths.rel });
     } catch (err) {
-        log('error', `Error finalizing file upload for ${uploadToken}`, { ip: req.ipaddr, username: req.username, error: err });
+        log('error', `Error finalizing file upload for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
         return res.status(500).json({ success: false, message: 'Failed to finalize file upload' });
     }
 });
 
+app.post('/api/files/upload/cancel', requireAuth, async (req, res) => {
+    const token = req.body.token;
+    if (!token) {
+        return res.status(400).json({ success: false, message: 'Missing upload token' });
+    }
+    const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
+    if (!upload) {
+        return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
+    }
+    const tempFilePath = upload.path_temp;
+    try {
+        // Remove temp file
+        await fs.promises.unlink(tempFilePath).catch(() => { });
+        db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+        res.json({ success: true });
+    } catch (err) {
+        log('error', `Error cancelling upload for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
+        res.status(500).json({ success: false, message: 'Failed to cancel upload' });
+    }
+});
+
 app.post('/api/files/download/create', requireAuth, requireVaultAccess, async (req, res) => {
-    const downloadToken = getSecureRandomHex(16);
+    const downloadToken = getSecureRandomHex(8);
     db.prepare(`INSERT INTO downloads (token, username, vault, created) VALUES (?, ?, ?, ?)`)
         .run(downloadToken, req.username, req.vault.name, Date.now());
     res.json({ success: true, token: downloadToken });
@@ -400,7 +430,6 @@ const requireDownloadToken = (req, res, next) => {
             res.status(status).end(message);
         }
     };
-
     if (!token) {
         return sendError(400, 'Missing download token');
     }
@@ -414,7 +443,7 @@ const requireDownloadToken = (req, res, next) => {
     }
     const vault = config.vaults.find(v => v.name === download.vault);
     if (!vault) {
-        return sendError(404, 'The vault this file belongs to no longer exists');
+        return sendError(404, 'The vault this download was created from no longer exists');
     }
     req.download = download;
     req.download.paths = paths.map(p => p.path);

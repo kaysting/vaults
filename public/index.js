@@ -1,4 +1,19 @@
 let authToken = localStorage.getItem('token');
+let username = '';
+let sortType = 'name';
+let sortOrder = 'asc';
+let viewType = 'list';
+let viewSize = 'normal';
+let viewHidden = false;
+let currentVault = null;
+let currentPath = '';
+let isLoaded = false;
+let clipboard = [];
+let lastSelectedFileIndex = -1;
+const navHistory = {
+    back: [],
+    forward: []
+};
 
 const apiRequest = async (method, url, { params = {}, data = {} } = {}) => {
     try {
@@ -39,11 +54,92 @@ const generateDownloadLink = async (vault, paths = []) => {
     return url;
 };
 
-const startFileDownload = (url, name = '') => {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    a.click();
+const generateDownloadLinkFromSelection = async () => {
+    const selectedFiles = getSelectedFiles();
+    const paths = selectedFiles.map(f => f.path);
+    if (paths.length === 0) paths.push(currentPath);
+    return await generateDownloadLink(currentVault, paths);
+};
+
+const uploadFiles = async files => {
+    files = files.map(file => ({
+        File: file,
+        name: file.name,
+        pathRel: file.webkitRelativePath || file.relativePath || file.name,
+        size: file.size
+    }));
+    const uploadedPaths = [];
+    const bytesPerChunk = 1024 * 1024 * 8;
+    const bytesTotal = files.reduce((sum, file) => sum + file.size, 0);
+    let bytesTotalUploaded = 0;
+    const vault = currentVault;
+    const basePath = currentPath;
+    const toast = showToast({
+        icon: 'upload',
+        message: files.length == 1 ? `Uploading ${files[0].name}...` : `Uploading ${files.length} files...`,
+        progressBar: true
+    });
+    for (const file of files) {
+        const resCreate = await api.post('/api/files/upload/create', {
+            vault,
+            path: `${basePath}/${file.pathRel}`
+        });
+        const uploadToken = resCreate.token;
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(file.File);
+        await new Promise((resolve, reject) => {
+            reader.onload = async (e) => {
+                try {
+                    const fileData = e.target.result;
+                    let offset = 0;
+                    while (offset < fileData.byteLength) {
+                        const chunk = fileData.slice(offset, offset + bytesPerChunk);
+                        await axios.post('/api/files/upload', chunk, {
+                            headers: {
+                                Authorization: `Bearer ${authToken}`,
+                                'Content-Type': 'application/octet-stream'
+                            },
+                            params: {
+                                token: uploadToken, vault
+                            },
+                            onUploadProgress: (progressEvent) => {
+                                toast.updateProgress(((bytesTotalUploaded + progressEvent.loaded) / bytesTotal) * 100);
+                            }
+                        });
+                        offset += bytesPerChunk;
+                        bytesTotalUploaded += chunk.byteLength;
+                    }
+                    resolve();
+                } catch (err) {
+                    reject(err);
+                }
+            };
+            reader.onerror = reject;
+        });
+        try {
+            const resFinalize = await api.post('/api/files/upload/finalize', {
+                token: uploadToken, vault
+            });
+            uploadedPaths.push(resFinalize.path);
+        } catch (error) {
+            console.error(`Failed to finalize upload for ${file.name}:`, error);
+            showToast({
+                type: 'danger',
+                icon: 'error',
+                message: `Failed to upload ${file.pathRel}: ${error.message}`
+            });
+            continue;
+        }
+    }
+    toast.close();
+    showToast({
+        type: 'success',
+        icon: 'upload',
+        message: uploadedPaths.length == 1 ? `Uploaded ${uploadedPaths[0].split('/').pop()}!` : `Uploaded ${uploadedPaths.length} files!`
+    });
+    if (vault == currentVault && currentPath == basePath) {
+        await browse(currentVault, currentPath, false, uploadedPaths);
+    }
 };
 
 const setStatus = (text, danger = false) => {
@@ -51,20 +147,11 @@ const setStatus = (text, danger = false) => {
     elStatus.classList.toggle('danger', danger);
 };
 
-const navHistory = {
-    back: [],
-    forward: []
-};
-
 const addToHistory = (history, path) => {
     if (history[history.length - 1] !== path) {
         history.push(path);
     }
 };
-
-const selectedFileClass = 'btn-tonal';
-const deselectedFileClass = 'btn-text';
-let lastSelectedFileIndex = -1;
 
 const fileSelect = (path) => {
     const elFile = elFiles.querySelector(`.file[data-path="${path}"]`);
@@ -107,16 +194,15 @@ const fileSelectAll = () => {
     updateActionButtons();
 };
 
-let username = '';
-let sortType = 'name';
-let sortOrder = 'asc';
-let viewType = 'list';
-let viewSize = 'normal';
-let viewHidden = false;
-let currentVault = null;
-let currentPath = '';
-let isLoaded = false;
-let clipboard = [];
+const fileSelectBetweenIndexes = (start, end) => {
+    fileDeselectAll();
+    const fileEls = Array.from(elFiles.querySelectorAll('.file'));
+    for (let j = start; j <= end; j++) {
+        const btn = fileEls[j];
+        btn.classList.add(selectedFileClass);
+        btn.classList.remove(deselectedFileClass);
+    }
+};
 
 const getSelectedFiles = () => {
     const selectedFiles = [];
@@ -161,6 +247,13 @@ const getActionStates = () => {
     };
 };
 
+const updateNavButtons = () => {
+    btnNavBack.disabled = navHistory.back.length === 0;
+    btnNavForward.disabled = navHistory.forward.length === 0;
+    btnNavUp.disabled = !currentPath || currentPath === '/';
+    btnRefresh.disabled = !currentVault;
+};
+
 const updateActionButtons = () => {
     const states = getActionStates();
     btnActionUpload.disabled = !states.canUpload;
@@ -176,6 +269,30 @@ const updateActionButtons = () => {
     btnActionSelect.disabled = !states.canSelect;
     btnActionSort.disabled = !states.canChangeSort;
     btnActionView.disabled = !states.canChangeView;
+};
+
+const changeSort = (type, order) => {
+    if (sortType === type && !order) {
+        sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+    } else {
+        sortType = type;
+        sortOrder = order || 'asc';
+    }
+    elBrowser.dataset.sortType = sortType;
+    elBrowser.dataset.sortOrder = sortOrder;
+    browse(currentVault, currentPath, false);
+};
+
+const changeView = (type, size, hidden) => {
+    viewType = type || 'list';
+    viewSize = size || 'normal';
+    viewHidden = hidden || false;
+    elBrowser.dataset.viewType = viewType;
+    elBrowser.dataset.viewSize = viewSize;
+    elBrowser.dataset.viewHidden = viewHidden;
+    elFiles.classList.toggle('view-list', viewType === 'list');
+    elFiles.classList.toggle('view-grid', viewType === 'grid');
+    elFiles.classList.toggle('view-tiles', viewType === 'tiles');
 };
 
 const actions = {
@@ -258,9 +375,11 @@ const actions = {
                         message: `...`,
                         progressBar: true
                     });
+                    let filename;
                     for (const file of selectedFiles) {
                         try {
-                            toast.updateMessage(`Deleting ${file.path.split('/').pop()} (${i + 1}/${selectedFiles.length})...`);
+                            filename = file.path.split('/').pop();
+                            toast.updateMessage(selectedFiles.length === 1 ? `Deleting ${filename}...` : `Deleting ${selectedFiles.length} files...`);
                             await api.post('/api/files/delete', {
                                 vault: currentVault,
                                 path: file.path
@@ -276,10 +395,11 @@ const actions = {
                         i++;
                         toast.updateProgress((i / selectedFiles.length) * 100);
                     }
+                    toast.close();
                     showToast({
                         type: 'success',
-                        icon: 'check_circle',
-                        message: `${countSuccess} file${countSuccess === 1 ? '' : 's'} deleted!`
+                        icon: 'delete',
+                        message: countSuccess == 1 ? `Deleted ${filename}!` : `Deleted ${countSuccess} files!`
                     });
                     await browse(currentVault, currentPath, false);
                 }
@@ -288,8 +408,13 @@ const actions = {
             }]
         });
     },
-    uploadFiles: async () => {
-        console.log('Placeholder for uploadFiles');
+    uploadSelectFiles: async () => {
+        const files = await systemFilePicker(true);
+        uploadFiles(files);
+    },
+    uploadSelectFolder: async () => {
+        const files = await systemFilePicker(false, true);
+        uploadFiles(files);
     },
     cut: async () => {
         console.log('Placeholder for cut');
@@ -304,30 +429,25 @@ const actions = {
         console.log('Placeholder for rename');
     },
     download: async () => {
-        const selectedFiles = getSelectedFiles();
-        const paths = selectedFiles.map(f => f.path);
-        if (paths.length === 0) paths.push(currentPath);
-        const url = await generateDownloadLink(currentVault, paths);
+        const url = await generateDownloadLinkFromSelection();
         startFileDownload(url);
     },
     copyLink: async () => {
-        const selectedFiles = getSelectedFiles();
-        const paths = selectedFiles.map(f => f.path);
-        if (paths.length === 0) paths.push(currentPath);
-        const url = await generateDownloadLink(currentVault, paths);
-        navigator.clipboard.writeText(url).then(() => {
+        const url = await generateDownloadLinkFromSelection();
+        try {
+            await navigator.clipboard.writeText(url);
             showToast({
                 type: 'success',
                 icon: 'check_circle',
                 message: `Download link copied to clipboard!`
             });
-        }).catch(err => {
+        } catch (err) {
             showToast({
                 type: 'danger',
                 icon: 'error',
                 message: `Failed to copy download link. Here it is: ${url}`
             });
-        });
+        }
     },
     open: async (file) => {
         if (file.isDirectory) {
@@ -342,9 +462,14 @@ const showFileContextMenu = (e) => {
     const states = getActionStates();
     const item = {
         upload: {
-            icon: 'upload',
+            icon: 'upload_file',
             label: 'Upload files...',
-            onClick: actions.uploadFiles
+            onClick: actions.uploadSelectFiles
+        },
+        uploadFolder: {
+            icon: 'drive_folder_upload',
+            label: 'Upload folder...',
+            onClick: actions.uploadSelectFolder
         },
         createFolder: {
             icon: 'create_new_folder',
@@ -419,7 +544,7 @@ const showFileContextMenu = (e) => {
     };
     let items = [];
     if (states.countSelected == 0) {
-        items.push(item.upload, item.createFolder, item.sep);
+        items.push(item.upload, item.uploadFolder, item.createFolder, item.sep);
         if (states.canPaste) {
             items.push(item.paste, item.sep);
         }
@@ -432,30 +557,113 @@ const showFileContextMenu = (e) => {
     showContextMenu(e, items);
 };
 
-const handleKeyCombo = (combo) => {
-    const states = getActionStates();
-    if (combo === 'shift+n' && states.canCreateFolder) {
-        actions.createFolder();
-    } else if (combo === 'delete' && states.canDelete) {
-        actions.delete();
-    } else if (combo === 'backspace') {
-        btnNavUp.click();
-    } else if (combo === 'r') {
-        btnRefresh.click();
-    } else if ((combo === 'ctrl+a' || combo === 'meta+a') && states.canSelect) {
-        fileSelectAll();
-    } else if ((combo === 'ctrl+x' || combo === 'meta+x') && states.canCut) {
-        actions.cut();
-    } else if ((combo === 'ctrl+c' || combo === 'meta+c') && states.canCopy) {
-        actions.copy();
-    } else if ((combo === 'ctrl+v' || combo === 'meta+v') && states.canPaste) {
-        actions.paste();
-    } else if (combo === 'shift+d' && states.canDownload) {
-        actions.download();
-    } else {
-        return false;
-    }
-    return true;
+const showSelectContextMenu = (event, element = btnActionSelect) => {
+    showContextMenu(event, [
+        {
+            label: 'Select all',
+            icon: 'select_all',
+            onClick: () => fileSelectAll()
+        },
+        {
+            label: 'Deselect all',
+            icon: 'deselect',
+            onClick: () => fileDeselectAll()
+        },
+        {
+            label: 'Invert selection',
+            icon: 'flip',
+            onClick: () => {
+                const fileEls = elFiles.querySelectorAll('.file');
+                fileEls.forEach(el => {
+                    if (el.classList.contains(selectedFileClass)) {
+                        el.classList.add(deselectedFileClass);
+                        el.classList.remove(selectedFileClass);
+                    } else {
+                        el.classList.add(selectedFileClass);
+                        el.classList.remove(deselectedFileClass);
+                    }
+                });
+                updateActionButtons();
+            }
+        }
+    ], { alignToElement: element });
+};
+
+const showSortContextMenu = (event, element = btnActionSort) => {
+    showContextMenu(event, [
+        {
+            label: 'A-Z',
+            icon: sortType === 'name' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('name', 'asc')
+        },
+        {
+            label: 'Z-A',
+            icon: sortType === 'name_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('name', 'desc')
+        },
+        {
+            label: 'Smallest to largest',
+            icon: sortType === 'size' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('size', 'asc')
+        },
+        {
+            label: 'Largest to smallest',
+            icon: sortType === 'size_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('size', 'desc')
+        },
+        {
+            label: 'Oldest to newest',
+            icon: sortType === 'date' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('date', 'asc')
+        },
+        {
+            label: 'Newest to oldest',
+            icon: sortType === 'date_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeSort('date', 'desc')
+        }
+    ], { alignToElement: element });
+};
+
+const showViewContextMenu = (event, element = btnActionView) => {
+    showContextMenu(event, [
+        {
+            label: 'List',
+            icon: viewType === 'list' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView('list', viewSize, viewHidden)
+        },
+        {
+            label: 'Grid',
+            icon: viewType === 'grid' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView('grid', viewSize, viewHidden)
+        },
+        { type: 'separator' },
+        {
+            label: 'Compact',
+            icon: viewSize === 'small' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, 'small', viewHidden)
+        },
+        {
+            label: 'Comfy',
+            icon: viewSize === 'normal' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, 'normal', viewHidden)
+        },
+        {
+            label: 'Spacious',
+            icon: viewSize === 'large' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, 'large', viewHidden)
+        },
+        { type: 'separator' },
+        {
+            label: 'Hide hidden files',
+            icon: !viewHidden ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, viewSize, false)
+        },
+        {
+            label: 'Show hidden files',
+            icon: viewHidden ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => changeView(viewType, viewSize, true)
+        }
+    ], { alignToElement: element });
 };
 
 const browse = async (vault, path = '/', shouldPushState = true, selectFiles = []) => {
@@ -585,24 +793,16 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
         elFile.addEventListener('click', async (e) => {
             const isSelected = elFile.classList.contains(selectedFileClass);
             if (e.shiftKey && lastSelectedFileIndex !== -1) {
-                // Shift selection logic
-                fileDeselectAll();
-                const fileEls = Array.from(elFiles.querySelectorAll('.file'));
                 const start = Math.min(lastSelectedFileIndex, index);
                 const end = Math.max(lastSelectedFileIndex, index);
-                for (let j = start; j <= end; j++) {
-                    const btn = fileEls[j];
-                    btn.classList.add(selectedFileClass);
-                    btn.classList.remove(deselectedFileClass);
-                }
+                fileSelectBetweenIndexes(start, end);
                 lastSelectedFileIndex = index;
             } else {
                 if (e.ctrlKey && isSelected) {
                     fileDeselect(file.path);
                     return;
                 }
-                if (!e.ctrlKey)
-                    fileDeselectAll();
+                if (!e.ctrlKey) fileDeselectAll();
                 fileSelect(file.path);
                 lastSelectedFileIndex = index;
             }
@@ -619,6 +819,12 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
         });
         // Handle context menu
         elFile.addEventListener('contextmenu', (e) => {
+            // If file isn't selected, deselect all and select it
+            if (!elFile.classList.contains(selectedFileClass)) {
+                fileDeselectAll();
+                fileSelect(file.path);
+                lastSelectedFileIndex = index;
+            }
             showFileContextMenu(e);
         });
         // Add to list
@@ -667,146 +873,6 @@ const loadVaults = async () => {
     }
 };
 
-const changeSort = (type, order) => {
-    if (sortType === type && !order) {
-        sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
-    } else {
-        sortType = type;
-        sortOrder = order || 'asc';
-    }
-    elBrowser.dataset.sortType = sortType;
-    elBrowser.dataset.sortOrder = sortOrder;
-    browse(currentVault, currentPath, false);
-};
-
-const changeView = (type, size, hidden) => {
-    viewType = type || 'list';
-    viewSize = size || 'normal';
-    viewHidden = hidden || false;
-    elBrowser.dataset.viewType = viewType;
-    elBrowser.dataset.viewSize = viewSize;
-    elBrowser.dataset.viewHidden = viewHidden;
-    elFiles.classList.toggle('view-list', viewType === 'list');
-    elFiles.classList.toggle('view-grid', viewType === 'grid');
-    elFiles.classList.toggle('view-tiles', viewType === 'tiles');
-};
-
-const showSelectContextMenu = (event, element = btnActionSelect) => {
-    showContextMenu(event, [
-        {
-            label: 'Select all',
-            icon: 'select_all',
-            onClick: () => fileSelectAll()
-        },
-        {
-            label: 'Deselect all',
-            icon: 'deselect',
-            onClick: () => fileDeselectAll()
-        },
-        {
-            label: 'Invert selection',
-            icon: 'flip',
-            onClick: () => {
-                const fileEls = elFiles.querySelectorAll('.file');
-                fileEls.forEach(el => {
-                    if (el.classList.contains(selectedFileClass)) {
-                        el.classList.add(deselectedFileClass);
-                        el.classList.remove(selectedFileClass);
-                    } else {
-                        el.classList.add(selectedFileClass);
-                        el.classList.remove(deselectedFileClass);
-                    }
-                });
-                updateActionButtons();
-            }
-        }
-    ], { alignToElement: element });
-};
-
-const showSortContextMenu = (event, element = btnActionSort) => {
-    showContextMenu(event, [
-        {
-            label: 'A-Z',
-            icon: sortType === 'name' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeSort('name', 'asc')
-        },
-        {
-            label: 'Z-A',
-            icon: sortType === 'name_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeSort('name', 'desc')
-        },
-        {
-            label: 'Smallest to largest',
-            icon: sortType === 'size' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeSort('size', 'asc')
-        },
-        {
-            label: 'Largest to smallest',
-            icon: sortType === 'size_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeSort('size', 'desc')
-        },
-        {
-            label: 'Oldest to newest',
-            icon: sortType === 'date' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeSort('date', 'asc')
-        },
-        {
-            label: 'Newest to oldest',
-            icon: sortType === 'date_desc' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeSort('date', 'desc')
-        }
-    ], { alignToElement: element });
-};
-
-const showViewContextMenu = (event, element = btnActionView) => {
-    showContextMenu(event, [
-        {
-            label: 'List',
-            icon: viewType === 'list' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView('list', viewSize, viewHidden)
-        },
-        {
-            label: 'Grid',
-            icon: viewType === 'grid' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView('grid', viewSize, viewHidden)
-        },
-        { type: 'separator' },
-        {
-            label: 'Compact',
-            icon: viewSize === 'small' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView(viewType, 'small', viewHidden)
-        },
-        {
-            label: 'Comfy',
-            icon: viewSize === 'normal' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView(viewType, 'normal', viewHidden)
-        },
-        {
-            label: 'Spacious',
-            icon: viewSize === 'large' ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView(viewType, 'large', viewHidden)
-        },
-        { type: 'separator' },
-        {
-            label: 'Hide hidden files',
-            icon: !viewHidden ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView(viewType, viewSize, false)
-        },
-        {
-            label: 'Show hidden files',
-            icon: viewHidden ? 'radio_button_checked' : 'radio_button_unchecked',
-            onClick: () => changeView(viewType, viewSize, true)
-        }
-    ], { alignToElement: element });
-};
-
-const updateNavButtons = () => {
-    btnNavBack.disabled = navHistory.back.length === 0;
-    btnNavForward.disabled = navHistory.forward.length === 0;
-    btnNavUp.disabled = !currentPath || currentPath === '/';
-    btnRefresh.disabled = !currentVault;
-};
-
 const init = async () => {
     let isLoggedIn = false;
     try {
@@ -835,6 +901,32 @@ const init = async () => {
     pageLogin.style.display = isLoggedIn ? 'none' : '';
     pageMain.style.display = isLoggedIn ? '' : 'none';
     updateNavButtons();
+};
+
+const handleKeyCombo = (combo) => {
+    const states = getActionStates();
+    if (combo === 'shift+n' && states.canCreateFolder) {
+        actions.createFolder();
+    } else if (combo === 'delete' && states.canDelete) {
+        actions.delete();
+    } else if (combo === 'backspace') {
+        btnNavUp.click();
+    } else if (combo === 'r') {
+        btnRefresh.click();
+    } else if ((combo === 'ctrl+a' || combo === 'meta+a') && states.canSelect) {
+        fileSelectAll();
+    } else if ((combo === 'ctrl+x' || combo === 'meta+x') && states.canCut) {
+        actions.cut();
+    } else if ((combo === 'ctrl+c' || combo === 'meta+c') && states.canCopy) {
+        actions.copy();
+    } else if ((combo === 'ctrl+v' || combo === 'meta+v') && states.canPaste) {
+        actions.paste();
+    } else if (combo === 'shift+d' && states.canDownload) {
+        actions.download();
+    } else {
+        return false;
+    }
+    return true;
 };
 
 btnLogin.addEventListener('click', async (e) => {
@@ -897,9 +989,22 @@ btnRefresh.addEventListener('click', async () => {
     await browse(currentVault, currentPath, false);
 });
 
+btnActionUpload.addEventListener('click', (e) => {
+    showContextMenu(e, [
+        {
+            label: 'Upload files...',
+            icon: 'upload_file',
+            onClick: actions.uploadSelectFiles
+        },
+        {
+            label: 'Upload folder...',
+            icon: 'drive_folder_upload',
+            onClick: actions.uploadSelectFolder
+        }
+    ], { alignToElement: btnActionUpload });
+});
 btnActionNewFolder.addEventListener('click', actions.createFolder);
 btnActionDelete.addEventListener('click', actions.delete);
-btnActionUpload.addEventListener('click', actions.uploadFiles);
 btnActionCut.addEventListener('click', actions.cut);
 btnActionCopy.addEventListener('click', actions.copy);
 btnActionPaste.addEventListener('click', actions.paste);
@@ -931,6 +1036,82 @@ elFiles.addEventListener('contextmenu', (e) => {
     if (e.target === elFiles) {
         fileDeselectAll();
         showFileContextMenu(e);
+    }
+});
+
+elFiles.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    elFiles.classList.add('dragover');
+});
+
+elFiles.addEventListener('dragleave', (e) => {
+    if (e.target === elFiles) {
+        elFiles.classList.remove('dragover');
+    }
+});
+
+elFiles.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    elFiles.classList.remove('dragover');
+    const items = e.dataTransfer.items;
+    if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+        // Handle folders and files using DataTransferItemList API
+        const getAllFiles = async (items) => {
+            const files = [];
+            const traverseEntry = async (entry, path = '') => {
+                if (entry.isFile) {
+                    await new Promise((resolve) => {
+                        entry.file(file => {
+                            // Set both relativePath and webkitRelativePath for consistency
+                            file.relativePath = path + file.name;
+                            file.webkitRelativePath = path + file.name;
+                            files.push(file);
+                            resolve();
+                        });
+                    });
+                } else if (entry.isDirectory) {
+                    const reader = entry.createReader();
+                    await new Promise((resolve, reject) => {
+                        const readEntries = () => {
+                            reader.readEntries(async (entries) => {
+                                if (!entries.length) {
+                                    resolve();
+                                    return;
+                                }
+                                for (const ent of entries) {
+                                    await traverseEntry(ent, path + entry.name + '/');
+                                }
+                                readEntries();
+                            }, reject);
+                        };
+                        readEntries();
+                    });
+                }
+            };
+            for (const item of items) {
+                const entry = item.webkitGetAsEntry();
+                if (entry) {
+                    await traverseEntry(entry, '');
+                }
+            }
+            return files;
+        };
+        const files = await getAllFiles(items);
+        if (files.length > 0) {
+            uploadFiles(files);
+        }
+    } else {
+        // Fallback: just files
+        const files = Array.from(e.dataTransfer.files).filter(file => file.type !== "");
+        // Set webkitRelativePath for consistency if not present
+        files.forEach(file => {
+            if (!file.webkitRelativePath) {
+                file.webkitRelativePath = file.name;
+            }
+        });
+        if (files.length > 0) {
+            uploadFiles(files);
+        }
     }
 });
 
