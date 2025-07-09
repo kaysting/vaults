@@ -32,9 +32,11 @@ const apiRequest = async (method, url, { params = {}, data = {} } = {}) => {
         const res = await axios(config);
         return res.data;
     } catch (error) {
-        const errorText = `${error.response?.status || 500}: ` + error.response?.data?.message || error.toString();
+        const resp = error.response?.data || {};
+        const errorText = resp.message || error.toString();
+        const errorCode = resp.code || undefined;
         console.error(`API ${method.toUpperCase()} ${errorText}`);
-        throw new Error(errorText);
+        throw { message: errorText, code: errorCode };
     }
 };
 
@@ -366,8 +368,7 @@ const actions = {
                         });
                         browse(currentVault, currentPath, false, [res.path]);
                     } catch (error) {
-                        const errorText = error.toString();
-                        elText.textContent = errorText;
+                        elText.textContent = error.message;
                         elText.classList.remove('d-none');
                     }
                 }
@@ -849,7 +850,7 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
     try {
         res = await api.get('/api/files/list', { vault, path });
     } catch (error) {
-        setStatus(error, true);
+        setStatus(error.message, true);
         isLoaded = isLoadedOld;
         return;
     }
@@ -1119,19 +1120,13 @@ btnLogin.addEventListener('click', async (e) => {
     const username = inputLoginUsername.value.trim();
     const password = inputLoginPassword.value.trim();
     loginFormText.classList.add('d-none');
-    if (!username || !password) {
-        loginFormText.textContent = 'Missing username or password';
-        loginFormText.classList.remove('d-none');
-        btnLogin.disabled = false;
-        return;
-    }
     try {
         const res = await api.post('/api/auth/login', {}, { username, password });
         authToken = res.token;
         localStorage.setItem('token', authToken);
         await init();
     } catch (error) {
-        loginFormText.textContent = error.response?.data?.message || 'Login failed';
+        loginFormText.textContent = error.message || 'Login failed';
         loginFormText.classList.remove('d-none');
     } finally {
         btnLogin.disabled = false;
@@ -1300,7 +1295,8 @@ elBrowser.addEventListener('drop', async (e) => {
     }
 });
 
-window.addEventListener('keyup', (e) => {
+window.addEventListener('keydown', (e) => {
+    if (e.repeat) return; // Ignore repeated keys
     const keys = [];
     if (e.ctrlKey || e.metaKey) keys.push('ctrl');
     if (e.shiftKey) keys.push('shift');

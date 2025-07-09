@@ -200,6 +200,9 @@ app.use((req, res, next) => {
             log('info', `[${duration}ms] ${req.method} ${res.statusCode} ${req.originalUrl}`, details);
         }
     });
+    res.sendError = (status, code, message) => {
+        res.status(status).json({ success: false, code, message });
+    };
     next();
 });
 
@@ -207,7 +210,7 @@ app.post('/api/auth/login', async (req, res) => {
     const username = req.body.username;
     const password = req.body.password;
     if (!username || !password) {
-        return res.status(400).json({ success: false, message: 'Missing username and/or password' });
+        return res.sendError(400, 'missing_credentials', 'A username and password are required');
     }
     for (const user of config.users) {
         if (user.username === username && await bcrypt.compare(password, user.password_hash)) {
@@ -219,7 +222,7 @@ app.post('/api/auth/login', async (req, res) => {
             return res.json({ success: true, token });
         }
     }
-    res.status(401).json({ success: false, message: 'Invalid username or password' });
+    res.sendError(401, 'invalid_credentials', 'Invalid username or password');
 });
 
 const requireAuth = (req, res, next) => {
@@ -232,7 +235,7 @@ const requireAuth = (req, res, next) => {
         req.username = session.username;
         return next();
     }
-    res.status(401).json({ success: false, message: 'Unauthorized' });
+    res.sendError(401, 'unauthorized', 'Missing or invalid authentication token');
 };
 
 app.post('/api/auth/logout', requireAuth, (req, res) => {
@@ -267,13 +270,13 @@ const requireVaultAccess = (req, res, next) => {
     const vaultName = req.query.vault;
     const vault = config.vaults.find(v => v.name === vaultName);
     if (!vault) {
-        return res.status(404).json({ success: false, message: 'Vault not found' });
+        return res.sendError(404, 'vault_not_found', 'The requested vault does not exist');
     }
     if (vault.users.includes(req.username)) {
         req.vault = vault;
         return next();
     }
-    res.status(403).json({ success: false, message: 'Forbidden' });
+    res.sendError(403, 'forbidden', 'You do not have access to this vault');
 };
 
 const getCleanPaths = (vault, pathDirty) => {
@@ -291,11 +294,11 @@ const getRequestPaths = (req, res, next) => {
 
 app.get('/api/files/list', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (!fs.existsSync(req.pathAbs)) {
-        return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
+        return res.sendError(404, 'not_found', 'No file exists at the requested path');
     }
     const stats = await fs.promises.stat(req.pathAbs).catch(() => { return {}; });
     if (!stats.isDirectory()) {
-        return res.status(400).json({ success: false, message: 'The file at the requested path is not a directory' });
+        return res.sendError(400, 'not_directory', 'The file at the requested path is not a directory');
     }
     const fileNames = await fs.promises.readdir(req.pathAbs).catch(() => []);
     const files = [];
@@ -316,10 +319,10 @@ app.get('/api/files/list', requireAuth, requireVaultAccess, getRequestPaths, asy
 
 app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (!fs.existsSync(req.pathAbs)) {
-        return res.status(404).json({ success: false, message: 'No file exists at the requested path' });
+        return res.sendError(404, 'not_found', 'No file exists at the requested path');
     }
     if (!req.pathRel || req.pathRel === '/') {
-        return res.status(400).json({ success: false, message: 'The root directory itself cannot be deleted' });
+        return res.sendError(400, 'root_delete', 'The root directory itself cannot be deleted');
     }
     try {
         const stats = await fs.promises.lstat(req.pathAbs);
@@ -333,7 +336,7 @@ app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, 
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
         log('error', `Failed to delete ${req.pathRel} from vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error: err });
-        res.status(500).json({ success: false, message: 'Failed to delete file or directory' });
+        res.sendError(500, 'delete_failed', 'Failed to delete file or directory');
     }
 });
 
@@ -354,23 +357,23 @@ const handleMoveCopy = async (req, res, action) => {
         pathFrom = getCleanPaths(req.vault, req.query.path_src);
         pathTo = getCleanPaths(req.vault, req.query.path_dest);
     } else {
-        return res.status(400).json({ success: false, message: 'Missing path_src or path_dest' });
+        return res.sendError(400, 'missing_path', 'Missing path_src or path_dest');
     }
 
     // Support overwrite query param
     const overwrite = req.query.overwrite === 'true';
 
     if (!fs.existsSync(pathFrom.abs)) {
-        return res.status(404).json({ success: false, message: 'Source file does not exist' });
+        return res.sendError(404, 'src_not_found', 'Source file does not exist');
     }
     if (fs.existsSync(pathTo.abs) && !overwrite) {
-        return res.status(400).json({ success: false, message: 'Destination file already exists' });
+        return res.sendError(400, 'dest_exists', 'Destination file already exists');
     }
     if (pathFrom.rel === pathTo.rel) {
-        return res.status(400).json({ success: false, message: 'Source and destination paths are the same' });
+        return res.sendError(400, 'same_path', 'Source and destination paths are the same');
     }
     if (pathFrom.rel === '/' || pathTo.rel === '/') {
-        return res.status(400).json({ success: false, message: 'The root directory itself cannot be modified' });
+        return res.sendError(400, 'root_modify', 'The root directory itself cannot be modified');
     }
 
     try {
@@ -401,7 +404,7 @@ const handleMoveCopy = async (req, res, action) => {
         }
     } catch (error) {
         log('error', `Failed to ${action} file from ${pathFrom.rel} to ${pathTo.rel} in vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error });
-        res.status(500).json({ success: false, message: `Failed to ${action} file: ${error}` });
+        res.sendError(500, `${action}_failed`, `Failed to ${action} file: ${error}`);
     }
 };
 
@@ -415,14 +418,14 @@ app.post('/api/files/copy', requireAuth, requireVaultAccess, async (req, res) =>
 
 app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     if (fs.existsSync(req.pathAbs)) {
-        return res.status(400).json({ success: false, message: 'A file or folder already exists at the requested path' });
+        return res.sendError(400, 'exists', 'A file or folder already exists at the requested path');
     }
     try {
         await fs.promises.mkdir(req.pathAbs, { recursive: true });
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
         log('error', `Error creating folder at ${req.pathRel} in vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error: err });
-        res.status(500).json({ success: false, message: 'Failed to create folder' });
+        res.sendError(500, 'mkdir_failed', 'Failed to create folder');
     }
 });
 
@@ -442,12 +445,12 @@ app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequest
     // Support overwrite query param
     const overwrite = req.query.overwrite === 'true';
     if (fs.existsSync(req.pathAbs) && !overwrite) {
-        return res.status(400).json({ success: false, message: 'A file already exists at the requested path' });
+        return res.sendError(400, 'exists', 'A file already exists at the requested path');
     }
     // Require size query param
     const sizeParam = req.query.size;
     if (!sizeParam || isNaN(Number(sizeParam)) || Number(sizeParam) <= 0) {
-        return res.status(400).json({ success: false, message: 'Missing or invalid size query parameter' });
+        return res.sendError(400, 'invalid_size', 'Missing or invalid size query parameter');
     }
     const requestedSize = Number(sizeParam);
 
@@ -456,11 +459,11 @@ app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequest
         const vault = req.vault;
         const hasSpace = await checkVaultQuota(vault, requestedSize);
         if (!hasSpace) {
-            return res.status(400).json({ success: false, message: 'Vault storage limit exceeded' });
+            return res.sendError(400, 'quota_exceeded', 'Vault storage limit exceeded');
         }
     } catch (err) {
         log('error', `Error checking quota for upload create`, { ip: req.ipaddr, username: req.username, error: err });
-        return res.status(500).json({ success: false, message: 'Failed to check vault quota' });
+        return res.sendError(500, 'quota_check_failed', 'Failed to check vault quota');
     }
 
     const uploadToken = getSecureRandomHex(8);
@@ -473,17 +476,17 @@ app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequest
 app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) => {
     const token = req.query.token;
     if (!token) {
-        return res.status(400).json({ success: false, message: 'Missing upload token' });
+        return res.sendError(400, 'missing_token', 'Missing upload token');
     }
     const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
     if (!upload) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
+        return res.sendError(404, 'invalid_token', 'Invalid or expired upload token');
     }
     if (!req.is('application/octet-stream')) {
-        return res.status(400).json({ success: false, message: 'Invalid content type, expected application/octet-stream' });
+        return res.sendError(400, 'invalid_content_type', 'Invalid content type, expected application/octet-stream');
     }
     if (!req.body || req.body.length === 0) {
-        return res.status(400).json({ success: false, message: 'No data provided in the request body' });
+        return res.sendError(400, 'no_data', 'No data provided in the request body');
     }
     const tempFilePath = upload.path_temp;
     try {
@@ -505,7 +508,7 @@ app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) 
             // Cancel upload: remove temp file and DB entry
             await fs.promises.unlink(tempFilePath).catch(() => { });
             db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
-            return res.status(400).json({ success: false, message: 'Vault storage limit exceeded. Upload canceled.' });
+            return res.sendError(400, 'quota_exceeded', 'Vault storage limit exceeded. Upload canceled.');
         }
         await fs.promises.mkdir(path.dirname(tempFilePath), { recursive: true });
         await fs.promises.appendFile(tempFilePath, req.body);
@@ -515,7 +518,7 @@ app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) 
         // Cancel upload on error
         await fs.promises.unlink(tempFilePath).catch(() => { });
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
-        return res.status(500).json({ success: false, message: 'Failed to upload file chunk. Upload canceled.' });
+        return res.sendError(500, 'upload_failed', 'Failed to upload file chunk. Upload canceled.');
     }
 });
 
@@ -525,14 +528,14 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
     const overwrite = req.query.overwrite === 'true';
     const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
     if (!upload) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
+        return res.sendError(404, 'invalid_token', 'Invalid or expired upload token');
     }
     const tempFilePath = upload.path_temp;
     if (!fs.existsSync(tempFilePath)) {
-        return res.status(400).json({ success: false, message: 'No data has been uploaded' });
+        return res.sendError(400, 'no_data', 'No data has been uploaded');
     }
     if (fs.existsSync(upload.path_dest) && !overwrite) {
-        return res.status(400).json({ success: false, message: 'A file already exists at the destination path' });
+        return res.sendError(400, 'exists', 'A file already exists at the destination path');
     }
     try {
         // Check quota before moving
@@ -555,7 +558,7 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
             // Cancel upload: remove temp file and DB entry
             await fs.promises.unlink(tempFilePath).catch(() => { });
             db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
-            return res.status(400).json({ success: false, message: 'Vault storage limit exceeded. Upload canceled.' });
+            return res.sendError(400, 'quota_exceeded', 'Vault storage limit exceeded. Upload canceled.');
         }
         await fs.promises.mkdir(path.dirname(upload.path_dest), { recursive: true });
         // If overwriting, remove the existing file first
@@ -573,18 +576,18 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
         // Cancel upload on error
         await fs.promises.unlink(tempFilePath).catch(() => { });
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
-        return res.status(500).json({ success: false, message: 'Failed to finalize file upload. Upload canceled.' });
+        return res.sendError(500, 'finalize_failed', 'Failed to finalize file upload. Upload canceled.');
     }
 });
 
 app.post('/api/files/upload/cancel', requireAuth, async (req, res) => {
     const token = req.body.token;
     if (!token) {
-        return res.status(400).json({ success: false, message: 'Missing upload token' });
+        return res.sendError(400, 'missing_token', 'Missing upload token');
     }
     const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
     if (!upload) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
+        return res.sendError(404, 'invalid_token', 'Invalid or expired upload token');
     }
     const tempFilePath = upload.path_temp;
     try {
@@ -595,7 +598,7 @@ app.post('/api/files/upload/cancel', requireAuth, async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         log('error', `Error cancelling upload for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
-        res.status(500).json({ success: false, message: 'Failed to cancel upload' });
+        res.sendError(500, 'cancel_failed', 'Failed to cancel upload');
     }
 });
 
@@ -610,17 +613,17 @@ app.post('/api/files/download/add', requireAuth, requireVaultAccess, async (req,
     const token = req.query.token;
     const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
     if (!download) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired download token' });
+        return res.sendError(404, 'invalid_token', 'Invalid or expired download token');
     }
     const paths = req.body.paths;
     if (!Array.isArray(paths) || paths.length === 0) {
-        return res.status(400).json({ success: false, message: 'No paths provided' });
+        return res.sendError(400, 'no_paths', 'No paths provided');
     }
     const pathsClean = [];
     for (const pathRelDirty of paths) {
         const path = getCleanPaths(req.vault, pathRelDirty);
         if (!fs.existsSync(path.abs)) {
-            return res.status(404).json({ success: false, message: `File not found in vault ${req.vault}: ${pathRelDirty}` });
+            return res.sendError(404, 'not_found', `File not found in vault ${req.vault}: ${pathRelDirty}`);
         }
         pathsClean.push(path);
     }
@@ -633,28 +636,20 @@ app.post('/api/files/download/add', requireAuth, requireVaultAccess, async (req,
 
 const requireDownloadToken = (req, res, next) => {
     const token = req.query.token || req.params.token;
-    const isApi = req.originalUrl.startsWith('/api');
-    const sendError = (status, message) => {
-        if (isApi) {
-            res.status(status).json({ success: false, message });
-        } else {
-            res.status(status).end(message);
-        }
-    };
     if (!token) {
-        return sendError(400, 'Missing download token');
+        return res.sendError(400, 'missing_token', 'Missing download token');
     }
     const download = db.prepare(`SELECT * FROM downloads WHERE token = ?`).get(token);
     if (!download) {
-        return sendError(404, 'Invalid or expired download token');
+        return res.sendError(404, 'invalid_token', 'Invalid or expired download token');
     }
     const paths = db.prepare(`SELECT path FROM download_files WHERE token = ?`).all(token);
     if (paths.length === 0) {
-        return sendError(404, 'No files associated with this download');
+        return res.sendError(404, 'no_files', 'No files associated with this download');
     }
     const vault = config.vaults.find(v => v.name === download.vault);
     if (!vault) {
-        return sendError(404, 'The vault this download was created from no longer exists');
+        return res.sendError(404, 'vault_missing', 'The vault this download was created from no longer exists');
     }
     req.download = download;
     req.download.paths = paths.map(p => p.path);
@@ -670,7 +665,7 @@ app.get('/api/files/download', requireDownloadToken, async (req, res) => {
         const pathAbs = path.join(vaultConfig.path, pathRel);
         const stats = await fs.promises.stat(pathAbs).catch(() => null);
         if (!stats) {
-            return res.status(404).json({ success: false, message: 'The file this download link points to no longer exists' });
+            return res.sendError(404, 'not_found', 'The file this download link points to no longer exists');
         }
         let name = path.basename(pathRel) || vaultConfig.name;
         if (stats.isDirectory()) {
@@ -717,12 +712,12 @@ app.get('/dl/:token{/:filename}', requireDownloadToken, async (req, res) => {
             log('warn', `Archiver warning: ${err.message}`, { ip: ipaddr, username });
         } else {
             log('error', `Archiver error: ${err.message}`, { ip: ipaddr, username, error: err });
-            res.status(500).send({ success: false, message: err.message });
+            res.sendError(500, 'archiver_error', err.message);
         }
     });
     archive.on('error', (err) => {
         log('error', `Archiver error during zip creation: ${err.message}`, { ip: ipaddr, username, error: err });
-        res.status(500).send({ success: false, message: err.message });
+        res.sendError(500, 'archiver_error', err.message);
     });
     archive.on('finish', () => {
         log('info', `Finished zip download for token ${req.params.token}`, { ip: ipaddr, username });
