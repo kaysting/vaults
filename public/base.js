@@ -11,8 +11,8 @@ const roundSmart = (num) => {
 const formatBytes = bytes => {
     const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
     let i = 0;
-    while (bytes >= 1000 && i < units.length - 1) {
-        bytes /= 1000;
+    while (bytes >= 1024 && i < units.length - 1) {
+        bytes /= 1024;
         i++;
     }
     return `${roundSmart(bytes)} ${units[i]}`;
@@ -426,15 +426,4 @@ document.addEventListener('mouseout', (e) => {
     }
 
     currentTooltipElement = null;
-});
-
-const updateColorMode = () => {
-    const isDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    document.body.dataset.colorMode = isDarkMode ? 'dark' : 'light';
-};
-
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateColorMode);
-
-document.addEventListener('DOMContentLoaded', () => {
-    updateColorMode();
 });

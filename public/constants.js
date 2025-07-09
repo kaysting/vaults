@@ -118,3 +118,14 @@ const typeIcons = {
 
 const selectedFileClass = 'btn-tonal';
 const deselectedFileClass = 'btn-text';
+
+const colorHues = {
+    red: 1,
+    orange: 25,
+    yellow: 50,
+    green: 140,
+    cyan: 180,
+    blue: 210,
+    purple: 260,
+    pink: 320
+};

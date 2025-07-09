@@ -103,6 +103,11 @@
     background: var(--c-bg-lighter);
 }
 
+#sidebar .account .small {
+    font-size: 12px;
+    color: var(--c-text-muted);
+}
+
 #actions {
     padding: 8px;
     border-bottom: 1px solid var(--c-border);

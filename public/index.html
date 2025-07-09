@@ -128,9 +128,13 @@
                 <div class="d-flex flex-col gap-8">
                     <div class="header">Account</div>
                     <div class="account d-flex gap-8 items-center">
-                        <div class="flex-grow">
-                            Signed in as <b class="username"></b>
+                        <div class="flex-grow d-flex flex-col gap-2">
+                            <span class="small">Signed in as</span>
+                            <b class="username"></b>
                         </div>
+                        <button id="btnAppearance" class="btn btn-text btn-icon" title="Appearance settings...">
+                            <span class="material-symbols-outlined">palette</span>
+                        </button>
                         <button id="btnLogout" class="btn btn-text-danger btn-icon" title="Log out">
                             <span class="material-symbols-outlined">logout</span>
                         </button>

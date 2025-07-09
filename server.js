@@ -139,7 +139,7 @@ const getVaultMaxCapacity = async (vault) => {
     // If size_gb is set, use it (in bytes), else use disk free space
     let maxBytes = null;
     if (vault.size_gb) {
-        maxBytes = vault.size_gb * 1000 * 1000 * 1000;
+        maxBytes = vault.size_gb * 1024 * 1024 * 1024;
     }
     let diskFree = 0;
     try {

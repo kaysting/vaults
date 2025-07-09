@@ -5,6 +5,7 @@ const inputLoginPassword = document.querySelector('#loginPassword');
 const btnLogin = document.querySelector('#btnLogin');
 const loginFormText = document.querySelector('#loginCard .form-text');
 const btnLogout = document.querySelector('#btnLogout');
+const btnAppearance = document.querySelector('#btnAppearance');
 const elUsername = document.querySelector('#sidebar .username');
 const elBreadcrumbs = document.querySelector('#breadcrumbs');
 const elVaults = document.querySelector('#sidebar .vaults');

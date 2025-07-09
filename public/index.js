@@ -1,5 +1,7 @@
 let authToken = localStorage.getItem('token');
 let username = '';
+let colorMode = localStorage.getItem('colorMode') || 'auto';
+let colorHue = localStorage.getItem('colorHue') || 'blue';
 let sortType = localStorage.getItem('sortType') || 'name';
 let sortOrder = localStorage.getItem('sortOrder') || 'asc';
 let viewType = localStorage.getItem('viewType') || 'list';
@@ -1114,6 +1116,15 @@ const handleKeyCombo = (combo) => {
     return true;
 };
 
+const updateAppearance = () => {
+    let mode = colorMode;
+    let hue = colorHue;
+    if (mode == 'auto')
+        mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.body.dataset.colorMode = mode;
+    document.body.style.setProperty('--hue', colorHues[hue] || colorHues.blue);
+};
+
 btnLogin.addEventListener('click', async (e) => {
     e.preventDefault();
     btnLogin.disabled = true;
@@ -1135,9 +1146,50 @@ btnLogin.addEventListener('click', async (e) => {
 
 btnLogout.addEventListener('click', async (e) => {
     await api.post('/api/auth/logout');
-    localStorage.removeItem('token');
-    authToken = null;
-    await init();
+    localStorage.clear();
+    window.location.href = '/';
+});
+
+btnAppearance.addEventListener('click', (e) => {
+    showContextMenu(e, [
+        {
+            label: 'Light',
+            icon: colorMode === 'light' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => {
+                colorMode = 'light';
+                localStorage.setItem('colorMode', colorMode);
+                updateAppearance();
+            }
+        },
+        {
+            label: 'Dark',
+            icon: colorMode === 'dark' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => {
+                colorMode = 'dark';
+                localStorage.setItem('colorMode', colorMode);
+                updateAppearance();
+            }
+        },
+        {
+            label: 'Auto',
+            icon: colorMode === 'auto' ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => {
+                colorMode = 'auto';
+                localStorage.setItem('colorMode', colorMode);
+                updateAppearance();
+            }
+        },
+        { type: 'separator' },
+        ...Object.entries(colorHues).map(([key, value]) => ({
+            label: key.substring(0, 1).toUpperCase() + key.substring(1),
+            icon: colorHue === key ? 'radio_button_checked' : 'radio_button_unchecked',
+            onClick: () => {
+                colorHue = key;
+                localStorage.setItem('colorHue', colorHue);
+                updateAppearance();
+            }
+        }))
+    ], { alignToElement: btnAppearance });
 });
 
 btnNavBack.addEventListener('click', async () => {
@@ -1319,7 +1371,10 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateAppearance);
+
 document.addEventListener('DOMContentLoaded', async () => {
+    updateAppearance();
     await init();
 });
 
