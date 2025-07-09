@@ -169,6 +169,8 @@ async function showContextMenu(event, items, options = {}) {
 
     setTimeout(() => menu.classList.add('visible'), 10);
     setTimeout(() => document.addEventListener('click', hideContextMenu), 0);
+
+    return menu;
 }
 
 

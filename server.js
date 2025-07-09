@@ -5,6 +5,7 @@ const express = require('express');
 const sqlite3 = require('better-sqlite3');
 const bcrypt = require('bcrypt');
 const archiver = require('archiver');
+const diskusage = require('diskusage');
 
 const config = require('./config.json');
 
@@ -51,6 +52,11 @@ db.prepare(`CREATE TABLE IF NOT EXISTS uploads (
     path_temp TEXT NOT NULL,
     path_dest TEXT NOT NULL
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS vault_sizes (
+    vault TEXT PRIMARY KEY,
+    size INTEGER NOT NULL DEFAULT 0,
+    last_updated INTEGER NOT NULL DEFAULT 0
+)`).run();
 db.pragma('foreign_keys = ON');
 
 const getSecureRandomHex = (length) => {
@@ -76,6 +82,96 @@ const expireOldDownloads = () => {
         log('info', `Removed ${changes} old download links`);
     }
 };
+
+const calcDirSize = async dirPath => {
+    let totalSize = 0;
+    let entries;
+    try {
+        entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    } catch (err) {
+        log('warn', `Failed to read directory: ${dirPath}`, { error: err });
+        return 0;
+    }
+    for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+            totalSize += await calcDirSize(fullPath);
+        } else if (entry.isFile()) {
+            try {
+                const stats = await fs.promises.stat(fullPath);
+                totalSize += stats.size;
+            } catch (err) {
+                log('warn', `Failed to stat file: ${fullPath}`, { error: err });
+                // ignore error, continue
+            }
+        }
+    }
+    return totalSize;
+};
+
+const updateVaultSize = async (name, dir) => {
+    const size = await calcDirSize(dir);
+    const now = Date.now();
+    db.prepare(`INSERT OR REPLACE INTO vault_sizes (vault, size, last_updated) VALUES (?, ?, ?)`)
+        .run(name, size, now);
+    log('info', `Updated size for vault ${name}: ${size} bytes`);
+};
+
+// Throttle vault size updates to avoid excessive recalculation during rapid uploads
+const vaultSizeUpdateTimers = {};
+const updateVaultSizeThrottled = (vault) => {
+    const key = vault.name;
+    if (vaultSizeUpdateTimers[key]) {
+        // Already scheduled
+        return;
+    }
+    // Schedule update in 2 seconds
+    vaultSizeUpdateTimers[key] = setTimeout(async () => {
+        await updateVaultSize(vault.name, vault.path);
+        delete vaultSizeUpdateTimers[key];
+    }, 2000);
+};
+const updateVaultSizeAndMaybeThrow = async (vault) => {
+    updateVaultSizeThrottled(vault);
+};
+
+const getVaultMaxCapacity = async (vault) => {
+    // If size_gb is set, use it (in bytes), else use disk free space
+    let maxBytes = null;
+    if (vault.size_gb) {
+        maxBytes = vault.size_gb * 1000 * 1000 * 1000;
+    }
+    let diskFree = 0;
+    try {
+        // Use diskusage for cross-platform disk free space
+        const { free } = await diskusage.check(vault.path);
+        diskFree = free;
+    } catch {
+        diskFree = 0;
+    }
+    if (maxBytes == null) return diskFree;
+    // If size_gb > diskFree, use diskFree
+    return Math.min(maxBytes, diskFree);
+};
+
+(async () => {
+    for (const vault of config.vaults) {
+        if (!fs.existsSync(vault.path)) {
+            log('error', `Vault path does not exist: ${vault.path}`);
+            continue;
+        }
+        if (!fs.statSync(vault.path).isDirectory()) {
+            log('error', `Vault path is not a directory: ${vault.path}`);
+            continue;
+        }
+        const last = db.prepare(`SELECT last_updated FROM vault_sizes WHERE vault = ?`).get(vault.name);
+        if (last && Date.now() - last.last_updated < 60 * 1000) {
+            log('info', `Skipping size update for vault ${vault.name} (updated less than a minute ago)`);
+            continue;
+        }
+        await updateVaultSize(vault.name, vault.path);
+    }
+})();
 
 expireOldSessions();
 expireOldDownloads();
@@ -148,13 +244,19 @@ app.get('/api/auth', requireAuth, (req, res) => {
     res.json({ success: true, session: req.session });
 });
 
-app.get('/api/vaults', requireAuth, (req, res) => {
+app.get('/api/vaults', requireAuth, async (req, res) => {
     const vaults = [];
     for (const vault of config.vaults) {
         if (vault.users.includes(req.username)) {
+            // Get usedBytes from vault_sizes
+            const sizeRow = db.prepare(`SELECT size FROM vault_sizes WHERE vault = ?`).get(vault.name);
+            const usedBytes = sizeRow ? sizeRow.size : 0;
+            const maxBytes = await getVaultMaxCapacity(vault);
             vaults.push({
                 name: vault.name,
-                users: vault.users
+                users: vault.users,
+                usedBytes,
+                maxBytes
             });
         }
     }
@@ -226,12 +328,25 @@ app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, 
         } else {
             await fs.promises.unlink(req.pathAbs);
         }
+        // Update vault size after deletion
+        await updateVaultSizeAndMaybeThrow(req.vault);
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
         log('error', `Failed to delete ${req.pathRel} from vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error: err });
         res.status(500).json({ success: false, message: 'Failed to delete file or directory' });
     }
 });
+
+const removeIfExists = async (absPath) => {
+    if (fs.existsSync(absPath)) {
+        const stats = await fs.promises.lstat(absPath);
+        if (stats.isDirectory()) {
+            await fs.promises.rm(absPath, { recursive: true, force: true });
+        } else {
+            await fs.promises.unlink(absPath);
+        }
+    }
+};
 
 const handleMoveCopy = async (req, res, action) => {
     let pathFrom, pathTo;
@@ -242,10 +357,13 @@ const handleMoveCopy = async (req, res, action) => {
         return res.status(400).json({ success: false, message: 'Missing path_src or path_dest' });
     }
 
+    // Support overwrite query param
+    const overwrite = req.query.overwrite === 'true';
+
     if (!fs.existsSync(pathFrom.abs)) {
         return res.status(404).json({ success: false, message: 'Source file does not exist' });
     }
-    if (fs.existsSync(pathTo.abs)) {
+    if (fs.existsSync(pathTo.abs) && !overwrite) {
         return res.status(400).json({ success: false, message: 'Destination file already exists' });
     }
     if (pathFrom.rel === pathTo.rel) {
@@ -256,9 +374,12 @@ const handleMoveCopy = async (req, res, action) => {
     }
 
     try {
+        if (fs.existsSync(pathTo.abs) && overwrite) {
+            await removeIfExists(pathTo.abs);
+        }
         if (action === 'move') {
             await fs.promises.rename(pathFrom.abs, pathTo.abs);
-            res.json({ success: true, oldPath: pathFrom.rel, newPath: pathTo.rel });
+            res.json({ success: true, oldPath: pathFrom.rel, newPath: pathTo.rel, overwrite });
         } else if (action === 'copy') {
             const copyRecursive = async (src, dest) => {
                 const stats = await fs.promises.stat(src);
@@ -276,7 +397,7 @@ const handleMoveCopy = async (req, res, action) => {
                 }
             };
             await copyRecursive(pathFrom.abs, pathTo.abs);
-            res.json({ success: true, srcPath: pathFrom.rel, destPath: pathTo.rel });
+            res.json({ success: true, srcPath: pathFrom.rel, destPath: pathTo.rel, overwrite });
         }
     } catch (error) {
         log('error', `Failed to ${action} file from ${pathFrom.rel} to ${pathTo.rel} in vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error });
@@ -305,15 +426,48 @@ app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequest
     }
 });
 
+// Utility function to check if a vault has enough space for an upload
+const checkVaultQuota = async (vault, requestedSize) => {
+    const maxBytes = await getVaultMaxCapacity(vault);
+    let currentSize = 0;
+    const sizeRow = db.prepare(`SELECT size FROM vault_sizes WHERE vault = ?`).get(vault.name);
+    if (sizeRow) currentSize = sizeRow.size;
+    if (currentSize + requestedSize > maxBytes) {
+        return false;
+    }
+    return true;
+};
+
 app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
-    if (fs.existsSync(req.pathAbs)) {
+    // Support overwrite query param
+    const overwrite = req.query.overwrite === 'true';
+    if (fs.existsSync(req.pathAbs) && !overwrite) {
         return res.status(400).json({ success: false, message: 'A file already exists at the requested path' });
     }
+    // Require size query param
+    const sizeParam = req.query.size;
+    if (!sizeParam || isNaN(Number(sizeParam)) || Number(sizeParam) <= 0) {
+        return res.status(400).json({ success: false, message: 'Missing or invalid size query parameter' });
+    }
+    const requestedSize = Number(sizeParam);
+
+    // Check quota before issuing upload token
+    try {
+        const vault = req.vault;
+        const hasSpace = await checkVaultQuota(vault, requestedSize);
+        if (!hasSpace) {
+            return res.status(400).json({ success: false, message: 'Vault storage limit exceeded' });
+        }
+    } catch (err) {
+        log('error', `Error checking quota for upload create`, { ip: req.ipaddr, username: req.username, error: err });
+        return res.status(500).json({ success: false, message: 'Failed to check vault quota' });
+    }
+
     const uploadToken = getSecureRandomHex(8);
     const tempFilePath = `${req.pathAbs}.${uploadToken}`;
     db.prepare(`INSERT INTO uploads (token, username, vault, path_temp, path_dest) VALUES (?, ?, ?, ?, ?)`)
         .run(uploadToken, req.username, req.vault.name, tempFilePath, req.pathAbs);
-    res.json({ success: true, token: uploadToken });
+    res.json({ success: true, token: uploadToken, overwrite });
 });
 
 app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) => {
@@ -333,17 +487,42 @@ app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) 
     }
     const tempFilePath = upload.path_temp;
     try {
+        // Check quota before writing
+        const vault = config.vaults.find(v => v.name === upload.vault);
+        const maxBytes = await getVaultMaxCapacity(vault);
+        let currentSize = 0;
+        const sizeRow = db.prepare(`SELECT size FROM vault_sizes WHERE vault = ?`).get(vault.name);
+        if (sizeRow) currentSize = sizeRow.size;
+        let tempSize = 0;
+        try {
+            const stat = await fs.promises.stat(tempFilePath);
+            tempSize = stat.size;
+        } catch { }
+        const incomingSize = req.body.length;
+        // Estimate new total size
+        const newTotal = currentSize - tempSize + tempSize + incomingSize;
+        if (newTotal > maxBytes) {
+            // Cancel upload: remove temp file and DB entry
+            await fs.promises.unlink(tempFilePath).catch(() => { });
+            db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+            return res.status(400).json({ success: false, message: 'Vault storage limit exceeded. Upload canceled.' });
+        }
         await fs.promises.mkdir(path.dirname(tempFilePath), { recursive: true });
         await fs.promises.appendFile(tempFilePath, req.body);
         res.json({ success: true });
     } catch (err) {
         log('error', `Error during file upload chunk for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
-        return res.status(500).json({ success: false, message: 'Failed to upload file chunk' });
+        // Cancel upload on error
+        await fs.promises.unlink(tempFilePath).catch(() => { });
+        db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+        return res.status(500).json({ success: false, message: 'Failed to upload file chunk. Upload canceled.' });
     }
 });
 
 app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (req, res) => {
     const token = req.query.token;
+    // Support overwrite query param
+    const overwrite = req.query.overwrite === 'true';
     const upload = db.prepare(`SELECT * FROM uploads WHERE token = ?`).get(token);
     if (!upload) {
         return res.status(404).json({ success: false, message: 'Invalid or expired upload token' });
@@ -352,18 +531,49 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
     if (!fs.existsSync(tempFilePath)) {
         return res.status(400).json({ success: false, message: 'No data has been uploaded' });
     }
-    if (fs.existsSync(upload.path_dest)) {
+    if (fs.existsSync(upload.path_dest) && !overwrite) {
         return res.status(400).json({ success: false, message: 'A file already exists at the destination path' });
     }
     try {
+        // Check quota before moving
+        const vault = config.vaults.find(v => v.name === upload.vault);
+        const maxBytes = await getVaultMaxCapacity(vault);
+        let currentSize = 0;
+        const sizeRow = db.prepare(`SELECT size FROM vault_sizes WHERE vault = ?`).get(vault.name);
+        if (sizeRow) currentSize = sizeRow.size;
+        const tempStat = await fs.promises.stat(tempFilePath);
+        // If overwriting, subtract the size of the existing file from currentSize
+        let destFileSize = 0;
+        if (overwrite && fs.existsSync(upload.path_dest)) {
+            try {
+                const destStat = await fs.promises.stat(upload.path_dest);
+                destFileSize = destStat.size;
+            } catch { }
+        }
+        const newTotal = currentSize - destFileSize + tempStat.size;
+        if (newTotal > maxBytes) {
+            // Cancel upload: remove temp file and DB entry
+            await fs.promises.unlink(tempFilePath).catch(() => { });
+            db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+            return res.status(400).json({ success: false, message: 'Vault storage limit exceeded. Upload canceled.' });
+        }
         await fs.promises.mkdir(path.dirname(upload.path_dest), { recursive: true });
+        // If overwriting, remove the existing file first
+        if (overwrite && fs.existsSync(upload.path_dest)) {
+            await fs.promises.unlink(upload.path_dest);
+        }
         await fs.promises.rename(tempFilePath, upload.path_dest);
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
         const paths = getCleanPaths(req.vault, upload.path_dest.replace(req.vault.path, ''));
-        res.json({ success: true, path: paths.rel });
+        // Update vault size after upload
+        await updateVaultSizeAndMaybeThrow(req.vault);
+        res.json({ success: true, path: paths.rel, overwrite });
     } catch (err) {
         log('error', `Error finalizing file upload for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
-        return res.status(500).json({ success: false, message: 'Failed to finalize file upload' });
+        // Cancel upload on error
+        await fs.promises.unlink(tempFilePath).catch(() => { });
+        db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+        return res.status(500).json({ success: false, message: 'Failed to finalize file upload. Upload canceled.' });
     }
 });
 
@@ -381,6 +591,7 @@ app.post('/api/files/upload/cancel', requireAuth, async (req, res) => {
         // Remove temp file
         await fs.promises.unlink(tempFilePath).catch(() => { });
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
+        // No need to update vault size, as temp files are not counted
         res.json({ success: true });
     } catch (err) {
         log('error', `Error cancelling upload for ${token}`, { ip: req.ipaddr, username: req.username, error: err });

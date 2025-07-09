@@ -15,6 +15,7 @@
     "archiver": "^7.0.1",
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^12.2.0",
+    "diskusage": "^1.2.0",
     "express": "^5.1.0",
     "multer": "^2.0.1"
   }

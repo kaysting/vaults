@@ -67,7 +67,26 @@
     color: var(--c-text-bold);
 }
 
-#sidebar .vault .members {
+#sidebar .vault .usage-bar {
+    height: 4px;
+    background: var(--c-border);
+    border-radius: 4px;
+    overflow: hidden;
+    width: 100%;
+    position: relative;
+    margin-top: 4px;
+}
+
+#sidebar .vault .usage-bar .usage-fill {
+    height: 100%;
+    background: var(--c-btn-primary-bg);
+}
+
+#sidebar .vault .usage-bar .usage-fill.danger {
+    background: var(--c-btn-danger-bg);
+}
+
+#sidebar .vault .small {
     font-size: 12px;
     color: var(--c-text-muted);
 }
@@ -184,23 +203,98 @@
     opacity: 0.5;
 }
 
-#browser[data-view-size="small"] .icon {
+#browser[data-view-type="list"][data-view-size="small"] .icon {
     font-size: 18px;
     width: 24px;
 }
 
-#browser[data-view-size="small"] .file {
+#browser[data-view-type="list"][data-view-size="small"] .file {
     height: 26px;
     font-size: 14px;
 }
 
-#browser[data-view-size="large"] .icon {
+#browser[data-view-type="list"][data-view-size="large"] .icon {
     font-size: 36px;
     width: 42px;
 }
 
-#browser[data-view-size="large"] .file {
+#browser[data-view-type="list"][data-view-size="large"] .file {
     height: 48px;
+}
+
+#browser[data-view-type="grid"] #headers {
+    display: none;
+}
+
+#browser[data-view-type="grid"] #files {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 4px;
+    padding: 8px;
+    flex-grow: 0;
+}
+
+#browser[data-view-type="grid"] .file {
+    flex-direction: column;
+    text-align: center;
+    align-items: center;
+    gap: 2px;
+    height: auto;
+    padding: 8px;
+    flex-grow: 0;
+    align-self: start;
+}
+
+#browser[data-view-type="grid"] .file .icon {
+    width: auto;
+    height: auto;
+    font-size: 64px;
+    height: 64px;
+    width: 64px;
+}
+
+#browser[data-view-type="grid"] .file .name {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: normal;
+    flex-grow: 0;
+    font-size: 14px;
+}
+
+#browser[data-view-type="grid"] .file .date,
+#browser[data-view-type="grid"] .file .size {
+    font-size: 12px;
+    color: var(--c-text-muted);
+}
+
+#browser[data-view-type="grid"] .file[data-is-directory="true"] .date,
+#browser[data-view-type="grid"] .file[data-is-directory="true"] .size {
+    display: none;
+}
+
+#browser[data-view-type="grid"][data-view-size="small"] #files {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 2px;
+    padding: 4px;
+}
+
+#browser[data-view-type="grid"][data-view-size="small"] .file .icon {
+    font-size: 42px;
+    width: 42px;
+    height: 42px;
+}
+
+#browser[data-view-type="grid"][data-view-size="large"] #files {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+#browser[data-view-type="grid"][data-view-size="large"] .file .icon {
+    font-size: 96px;
+    width: 96px;
+    height: 96px;
 }
 
 #btnMenu,

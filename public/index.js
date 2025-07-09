@@ -1,14 +1,15 @@
 let authToken = localStorage.getItem('token');
 let username = '';
-let sortType = 'name';
-let sortOrder = 'asc';
-let viewType = 'list';
-let viewSize = 'normal';
-let viewHidden = false;
+let sortType = localStorage.getItem('sortType') || 'name';
+let sortOrder = localStorage.getItem('sortOrder') || 'asc';
+let viewType = localStorage.getItem('viewType') || 'list';
+let viewSize = localStorage.getItem('viewSize') || 'normal';
+let viewHidden = (localStorage.getItem('viewHidden') === 'true') || false;
 let currentVault = null;
 let currentPath = '';
 let isLoaded = false;
 let clipboard = [];
+let clipboardType = null;
 let lastSelectedFileIndex = -1;
 const navHistory = {
     back: [],
@@ -80,10 +81,21 @@ const uploadFiles = async files => {
         progressBar: true
     });
     for (const file of files) {
-        const resCreate = await api.post('/api/files/upload/create', {
-            vault,
-            path: `${basePath}/${file.pathRel}`
-        });
+        let resCreate;
+        try {
+            resCreate = await api.post('/api/files/upload/create', {
+                vault,
+                path: `${basePath}/${file.pathRel}`,
+                size: file.size
+            });
+        } catch (error) {
+            showToast({
+                type: 'danger',
+                icon: 'error',
+                message: `Failed to start upload for ${file.pathRel}: ${error.message}`
+            });
+            continue;
+        }
         const uploadToken = resCreate.token;
         const reader = new FileReader();
         reader.readAsArrayBuffer(file.File);
@@ -92,20 +104,34 @@ const uploadFiles = async files => {
                 try {
                     const fileData = e.target.result;
                     let offset = 0;
+                    const maxRetries = 3;
+                    const retryDelay = 2000; // ms
                     while (offset < fileData.byteLength) {
                         const chunk = fileData.slice(offset, offset + bytesPerChunk);
-                        await axios.post('/api/files/upload', chunk, {
-                            headers: {
-                                Authorization: `Bearer ${authToken}`,
-                                'Content-Type': 'application/octet-stream'
-                            },
-                            params: {
-                                token: uploadToken, vault
-                            },
-                            onUploadProgress: (progressEvent) => {
-                                toast.updateProgress(((bytesTotalUploaded + progressEvent.loaded) / bytesTotal) * 100);
+                        let attempt = 0;
+                        while (true) {
+                            try {
+                                await axios.post('/api/files/upload', chunk, {
+                                    headers: {
+                                        Authorization: `Bearer ${authToken}`,
+                                        'Content-Type': 'application/octet-stream'
+                                    },
+                                    params: {
+                                        token: uploadToken, vault
+                                    },
+                                    onUploadProgress: (progressEvent) => {
+                                        toast.updateProgress(((bytesTotalUploaded + progressEvent.loaded) / bytesTotal) * 100);
+                                    }
+                                });
+                                break; // Success, exit retry loop
+                            } catch (err) {
+                                attempt++;
+                                if (attempt > maxRetries) {
+                                    throw new Error(`Failed to upload chunk after ${maxRetries} retries: ${err.message}`);
+                                }
+                                await new Promise(res => setTimeout(res, retryDelay));
                             }
-                        });
+                        }
                         offset += bytesPerChunk;
                         bytesTotalUploaded += chunk.byteLength;
                     }
@@ -115,6 +141,13 @@ const uploadFiles = async files => {
                 }
             };
             reader.onerror = reject;
+        }).catch(error => {
+            showToast({
+                type: 'danger',
+                icon: 'error',
+                message: `Failed to upload ${file.pathRel}: ${error.message}`
+            });
+            return; // Skip to next file
         });
         try {
             const resFinalize = await api.post('/api/files/upload/finalize', {
@@ -139,6 +172,7 @@ const uploadFiles = async files => {
     });
     if (vault == currentVault && currentPath == basePath) {
         await browse(currentVault, currentPath, false, uploadedPaths);
+        await loadVaults();
     }
 };
 
@@ -278,6 +312,9 @@ const changeSort = (type, order) => {
         sortType = type;
         sortOrder = order || 'asc';
     }
+    // Save to localStorage
+    localStorage.setItem('sortType', sortType);
+    localStorage.setItem('sortOrder', sortOrder);
     elBrowser.dataset.sortType = sortType;
     elBrowser.dataset.sortOrder = sortOrder;
     browse(currentVault, currentPath, false);
@@ -287,12 +324,13 @@ const changeView = (type, size, hidden) => {
     viewType = type || 'list';
     viewSize = size || 'normal';
     viewHidden = hidden || false;
+    // Save to localStorage
+    localStorage.setItem('viewType', viewType);
+    localStorage.setItem('viewSize', viewSize);
+    localStorage.setItem('viewHidden', viewHidden);
     elBrowser.dataset.viewType = viewType;
     elBrowser.dataset.viewSize = viewSize;
     elBrowser.dataset.viewHidden = viewHidden;
-    elFiles.classList.toggle('view-list', viewType === 'list');
-    elFiles.classList.toggle('view-grid', viewType === 'grid');
-    elFiles.classList.toggle('view-tiles', viewType === 'tiles');
 };
 
 const actions = {
@@ -357,8 +395,24 @@ const actions = {
     delete: async () => {
         const selectedFiles = getSelectedFiles();
         const el = document.createElement('div');
+        let filename;
+        if (selectedFiles.length === 1) {
+            filename = selectedFiles[0].path.split('/').pop();
+        } else {
+            const folderCount = selectedFiles.filter(f => f.isDirectory).length;
+            const fileCount = selectedFiles.length - folderCount;
+            if (fileCount > 0 && folderCount > 0) {
+                filename = `${fileCount} file${fileCount === 1 ? '' : 's'} and ${folderCount} folder${folderCount === 1 ? '' : 's'}`;
+            } else if (fileCount > 0) {
+                filename = `${fileCount} file${fileCount === 1 ? '' : 's'}`;
+            } else if (folderCount > 0) {
+                filename = `${folderCount} folder${folderCount === 1 ? '' : 's'}`;
+            } else {
+                filename = '';
+            }
+        }
         el.innerHTML = /*html*/`
-            <p>Are you sure you want to delete the selected ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}?</p>
+            <p>Are you sure you want to delete ${filename}?</p>
         `;
         showModal({
             title: 'Confirm deletion',
@@ -402,6 +456,7 @@ const actions = {
                         message: countSuccess == 1 ? `Deleted ${filename}!` : `Deleted ${countSuccess} files!`
                     });
                     await browse(currentVault, currentPath, false);
+                    await loadVaults();
                 }
             }, {
                 label: 'Cancel'
@@ -417,16 +472,125 @@ const actions = {
         uploadFiles(files);
     },
     cut: async () => {
-        console.log('Placeholder for cut');
+        const selectedFiles = getSelectedFiles();
+        const selectedPaths = selectedFiles.map(f => f.path);
+        clipboard = selectedPaths;
+        clipboardType = 'cut';
+        showToast({
+            type: 'success',
+            icon: 'content_cut',
+            message: `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} cut to clipboard!`
+        });
+        updateActionButtons();
     },
     copy: async () => {
-        console.log('Placeholder for copy');
+        const selectedFiles = getSelectedFiles();
+        const selectedPaths = selectedFiles.map(f => f.path);
+        clipboard = selectedPaths;
+        clipboardType = 'copy';
+        showToast({
+            type: 'success',
+            icon: 'content_copy',
+            message: `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} copied to clipboard!`
+        });
+        updateActionButtons();
     },
     paste: async () => {
-        console.log('Placeholder for paste');
+        const paths = clipboard;
+        const type = clipboardType;
+        clipboard = [];
+        clipboardType = null;
+        updateActionButtons();
+        for (const pathSrc of paths) {
+            const pathDest = `${currentPath}/${pathSrc.split('/').pop()}`;
+            console.log(`${type} ${pathSrc} to ${pathDest}`);
+        };
     },
     rename: async () => {
-        console.log('Placeholder for rename');
+        const selectedFiles = getSelectedFiles();
+        if (selectedFiles.length !== 1) return;
+        const file = selectedFiles[0];
+        const oldName = file.path.split('/').pop();
+        const extIndex = oldName.lastIndexOf('.');
+        const baseName = extIndex > 0 ? oldName.slice(0, extIndex) : oldName;
+        const ext = extIndex > 0 ? oldName.slice(extIndex) : '';
+        const el = document.createElement('div');
+        el.innerHTML = /*html*/`
+            <div class="form-field">
+                <input type="text" class="textbox" value="${oldName}">
+                <div class="form-text text-danger text-left d-none"></div>
+            </div>
+        `;
+        const elInput = el.querySelector('input');
+        const elText = el.querySelector('.form-text');
+        const elModal = showModal({
+            width: 400,
+            title: 'Rename file',
+            bodyContent: el,
+            actions: [{
+                label: 'Rename',
+                class: 'btn-primary',
+                preventClose: true,
+                onClick: async () => {
+                    const newName = elInput.value.trim();
+                    if (!newName) {
+                        elText.textContent = 'Name cannot be empty.';
+                        elText.classList.remove('d-none');
+                        return;
+                    }
+                    if (/[\\/:\*\?"<>\|]/.test(newName)) {
+                        elText.textContent = `That character isn't allowed.`;
+                        elText.classList.remove('d-none');
+                        return;
+                    }
+                    if (newName === oldName) {
+                        elModal.close();
+                        return;
+                    }
+                    const destPath = file.path.split('/').slice(0, -1).concat(newName).join('/');
+                    try {
+                        await api.post('/api/files/move', {
+                            vault: currentVault,
+                            path_src: file.path,
+                            path_dest: destPath
+                        });
+                        elModal.close();
+                        showToast({
+                            type: 'success',
+                            icon: 'drive_file_rename_outline',
+                            message: `Renamed to ${newName}!`
+                        });
+                        await browse(currentVault, currentPath, false, [destPath]);
+                        await loadVaults();
+                    } catch (error) {
+                        elText.textContent = error.message;
+                        elText.classList.remove('d-none');
+                    }
+                }
+            }, {
+                label: 'Cancel'
+            }]
+        });
+        elInput.focus();
+        // Select only the base name, not the extension
+        if (baseName) {
+            elInput.setSelectionRange(0, baseName.length);
+        }
+        elInput.addEventListener('keydown', (e) => {
+            elText.classList.add('d-none');
+            if (e.key.match(/[\\/:\*\?"<>\|]/)) {
+                e.preventDefault();
+                elText.textContent = `That character isn't allowed.`;
+                elText.classList.remove('d-none');
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                const btnRename = elModal.querySelector('.btn-primary');
+                btnRename.click();
+            }
+        });
     },
     download: async () => {
         const url = await generateDownloadLinkFromSelection();
@@ -474,6 +638,7 @@ const showFileContextMenu = (e) => {
         createFolder: {
             icon: 'create_new_folder',
             label: 'Create folder...',
+            shortcut: 'Shift + N',
             onClick: actions.createFolder
         },
         open: {
@@ -484,31 +649,37 @@ const showFileContextMenu = (e) => {
         cut: {
             icon: 'content_cut',
             label: 'Cut',
+            shortcut: 'Ctrl + X',
             onClick: actions.cut
         },
         copy: {
             icon: 'content_copy',
             label: 'Copy',
+            shortcut: 'Ctrl + C',
             onClick: actions.copy
         },
         paste: {
             icon: 'content_paste',
             label: 'Paste',
+            shortcut: 'Ctrl + V',
             onClick: actions.paste
         },
         rename: {
             icon: 'drive_file_rename_outline',
             label: 'Rename..',
+            shortcut: 'N',
             onClick: actions.rename
         },
         delete: {
             icon: 'delete',
             label: 'Delete...',
+            shortcut: 'Del',
             onClick: actions.delete
         },
         download: {
             icon: 'download',
             label: states.downloadLabel,
+            shortcut: 'Shift + D',
             onClick: actions.download
         },
         copyLink: {
@@ -520,24 +691,27 @@ const showFileContextMenu = (e) => {
             icon: 'check_box',
             label: 'Select...',
             onClick: (e) => {
-                const menuEl = document.querySelector('.context-menu');
-                showSelectContextMenu(e, menuEl);
+                setTimeout(() => {
+                    showSelectContextMenu(e, null);
+                }, 100);
             }
         },
         sort: {
             icon: 'sort',
             label: 'Sort...',
             onClick: (e) => {
-                const menuEl = document.querySelector('.context-menu');
-                showSortContextMenu(e, menuEl);
+                setTimeout(() => {
+                    showSortContextMenu(e, null);
+                }, 0);
             }
         },
         view: {
             icon: 'view_list',
             label: 'View...',
             onClick: (e) => {
-                const menuEl = document.querySelector('.context-menu');
-                showViewContextMenu(e, menuEl);
+                setTimeout(() => {
+                    showViewContextMenu(e, null);
+                }, 0);
             }
         },
         sep: { type: 'separator' }
@@ -683,13 +857,17 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
         addToHistory(navHistory.back, currentPath);
         navHistory.forward = [];
     }
+    if (vault !== currentVault) {
+        clipboard = [];
+        clipboardType = null;
+    }
     currentVault = vault;
     currentPath = res.path;
     lastSelectedFileIndex = -1;
     updateNavButtons();
     if (shouldPushState)
         window.history.pushState({}, '', `/${vault}${res.path}`);
-    document.title = `Vaults - ${vault} - ${res.path || '/'}`;
+    document.title = `Vaults - ${vault} / ${res.path.split('/').filter(Boolean).join(' / ')}`;
     // Render breadcrumbs
     elBreadcrumbs.innerHTML = '';
     let ancestor = '';
@@ -779,7 +957,6 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
         elName.title = file.name;
         if (!file.isDirectory) {
             elSize.textContent = formatBytes(file.size);
-            elSize.title = file.size.toLocaleString() + ' bytes';
             elDate.textContent = getRelativeTimestamp(file.modified);
             elDate.title = new Date(file.modified).toLocaleString();
         }
@@ -855,13 +1032,18 @@ const loadVaults = async () => {
     const res = await api.get('/api/vaults');
     res.vaults.sort((a, b) => a.name.localeCompare(b.name));
     for (const vault of res.vaults) {
+        const usagePercent = vault.usedBytes / vault.maxBytes * 100;
         const elVault = document.createElement('button');
         elVault.className = 'btn btn-text vault';
         elVault.innerHTML = /*html*/`
             <span class="material-symbols-outlined">dns</span>
-            <div class="d-flex flex-col gap-2">
+            <div class="d-flex flex-col gap-2 flex-grow">
                 <span class="name"></span>
-                <span class="members">${vault.users.length} member${vault.users.length == 1 ? '' : 's'}</span>
+                <span class="small">${vault.users.length} member${vault.users.length == 1 ? '' : 's'}</span>
+                <div class="usage-bar flex-no-shrink">
+                    <div class="usage-fill ${usagePercent > 80 ? 'danger' : ''}" style="width: ${usagePercent}%;"></div>
+                </div>
+                <span class="small">${formatBytes(vault.usedBytes)} of ${formatBytes(vault.maxBytes)} used</span>
             </div>
         `;
         elVault.querySelector('.name').textContent = vault.name;
@@ -923,6 +1105,8 @@ const handleKeyCombo = (combo) => {
         actions.paste();
     } else if (combo === 'shift+d' && states.canDownload) {
         actions.download();
+    } else if (combo === 'n' && states.canRename) {
+        actions.rename();
     } else {
         return false;
     }
@@ -986,7 +1170,8 @@ btnNavUp.addEventListener('click', async () => {
 });
 
 btnRefresh.addEventListener('click', async () => {
-    await browse(currentVault, currentPath, false);
+    loadVaults();
+    browse(currentVault, currentPath, false);
 });
 
 btnActionUpload.addEventListener('click', (e) => {
@@ -1025,32 +1210,32 @@ btnSortDate.addEventListener('click', () => {
     changeSort('date');
 });
 
-elFiles.addEventListener('click', (e) => {
-    if (e.target === elFiles) {
+elBrowser.addEventListener('click', (e) => {
+    if (e.target === elBrowser || e.target === elFiles) {
         fileDeselectAll();
     }
 });
 
-elFiles.addEventListener('contextmenu', (e) => {
+elBrowser.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    if (e.target === elFiles) {
+    if (e.target === elBrowser || e.target === elFiles) {
         fileDeselectAll();
         showFileContextMenu(e);
     }
 });
 
-elFiles.addEventListener('dragover', (e) => {
+elBrowser.addEventListener('dragover', (e) => {
     e.preventDefault();
     elFiles.classList.add('dragover');
 });
 
-elFiles.addEventListener('dragleave', (e) => {
+elBrowser.addEventListener('dragleave', (e) => {
     if (e.target === elFiles) {
         elFiles.classList.remove('dragover');
     }
 });
 
-elFiles.addEventListener('drop', async (e) => {
+elBrowser.addEventListener('drop', async (e) => {
     e.preventDefault();
     elFiles.classList.remove('dragover');
     const items = e.dataTransfer.items;
