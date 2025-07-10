@@ -18,42 +18,16 @@ const navHistory = {
     forward: []
 };
 
-const apiRequest = async (method, url, { params = {}, data = {} } = {}) => {
-    try {
-        const config = {
-            method,
-            url,
-            headers: { Authorization: `Bearer ${authToken}` },
-            params,
-            data
-        };
-        // Remove data for GET and DELETE requests
-        if (method === 'get' || method === 'delete') {
-            delete config.data;
-        }
-        const res = await axios(config);
-        return res.data;
-    } catch (error) {
-        const resp = error.response?.data || {};
-        const errorText = resp.message || error.toString();
-        const errorCode = resp.code || undefined;
-        console.error(`API ${method.toUpperCase()} ${errorText}`);
-        throw { message: errorText, code: errorCode };
-    }
-};
-
-const api = {
-    get: (url, params = {}) => apiRequest('get', url, { params }),
-    post: (url, params = {}, data = {}) => apiRequest('post', url, { params, data }),
-    put: (url, params = {}, data = {}) => apiRequest('put', url, { params, data }),
-    delete: (url, params = {}) => apiRequest('delete', url, { params })
-};
+const api = initApi(authToken);
 
 const generateDownloadLink = async (vault, paths = []) => {
-    const resCreate = await api.post('/api/files/download/create', { vault });
+    const resCreate = await api.files.downloadCreate(vault);
+    if (resCreate.code) throw new Error(resCreate.message);
     const token = resCreate.token;
-    const resAdd = await api.post('/api/files/download/add', { token, vault }, { paths });
-    const resGet = await api.get('/api/files/download', { token });
+    const resAdd = await api.files.downloadAdd(token, vault, paths);
+    if (resAdd.code) throw new Error(resAdd.message);
+    const resGet = await api.files.downloadGet(token);
+    if (resGet.code) throw new Error(resGet.message);
     const url = encodeURI(window.location.origin + resGet.url);
     console.log(`Download link generated: ${url}`);
     return url;
@@ -74,9 +48,11 @@ const uploadFiles = async files => {
         size: file.size
     }));
     const uploadedPaths = [];
-    const bytesPerChunk = 1024 * 1024 * 8;
+    const bytesPerChunk = 1024 * 1024 * 4;
     const bytesTotal = files.reduce((sum, file) => sum + file.size, 0);
     let bytesTotalUploaded = 0;
+    let filesUploaded = 0;
+    const startTime = Date.now();
     const vault = currentVault;
     const basePath = currentPath;
     const toast = showToast({
@@ -84,89 +60,89 @@ const uploadFiles = async files => {
         message: files.length == 1 ? `Uploading ${files[0].name}...` : `Uploading ${files.length} files...`,
         progressBar: true
     });
+    const updateToast = () => {
+        toast.updateProgress((bytesTotalUploaded / bytesTotal) * 100);
+        const secsElapsed = (Date.now() - startTime) / 1000;
+        const bytesPerSec = bytesTotalUploaded / secsElapsed;
+        const completionPercent = Math.round((bytesTotalUploaded / bytesTotal) * 100);
+        toast.updateDescription(`${completionPercent}%, ${filesUploaded + 1}/${files.length}, ${formatBytes(bytesPerSec)}/s`);
+    };
     for (const file of files) {
-        let resCreate;
-        try {
-            resCreate = await api.post('/api/files/upload/create', {
-                vault,
-                path: `${basePath}/${file.pathRel}`,
-                size: file.size
-            });
-        } catch (error) {
+        const resCreate = await api.files.uploadCreate(vault, `${basePath}/${file.pathRel}`, file.size);
+        if (resCreate.code) {
             showToast({
                 type: 'danger',
                 icon: 'error',
-                message: `Failed to start upload for ${file.pathRel}: ${error.message}`
+                message: `Failed to start upload for ${file.pathRel}: ${resCreate.message}`
             });
             continue;
         }
         const uploadToken = resCreate.token;
-        const reader = new FileReader();
-        reader.readAsArrayBuffer(file.File);
-        await new Promise((resolve, reject) => {
-            reader.onload = async (e) => {
-                try {
-                    const fileData = e.target.result;
-                    let offset = 0;
-                    const maxRetries = 3;
-                    const retryDelay = 2000; // ms
-                    while (offset < fileData.byteLength) {
-                        const chunk = fileData.slice(offset, offset + bytesPerChunk);
-                        let attempt = 0;
-                        while (true) {
-                            try {
-                                await axios.post('/api/files/upload', chunk, {
-                                    headers: {
-                                        Authorization: `Bearer ${authToken}`,
-                                        'Content-Type': 'application/octet-stream'
-                                    },
-                                    params: {
-                                        token: uploadToken, vault
-                                    },
-                                    onUploadProgress: (progressEvent) => {
-                                        toast.updateProgress(((bytesTotalUploaded + progressEvent.loaded) / bytesTotal) * 100);
-                                    }
-                                });
-                                break; // Success, exit retry loop
-                            } catch (err) {
-                                attempt++;
-                                if (attempt > maxRetries) {
-                                    throw new Error(`Failed to upload chunk after ${maxRetries} retries: ${err.message}`);
-                                }
-                                await new Promise(res => setTimeout(res, retryDelay));
-                            }
-                        }
-                        offset += bytesPerChunk;
-                        bytesTotalUploaded += chunk.byteLength;
-                    }
-                    resolve();
-                } catch (err) {
-                    reject(err);
-                }
-            };
-            reader.onerror = reject;
-        }).catch(error => {
-            showToast({
-                type: 'danger',
-                icon: 'error',
-                message: `Failed to upload ${file.pathRel}: ${error.message}`
-            });
-            return; // Skip to next file
-        });
         try {
-            const resFinalize = await api.post('/api/files/upload/finalize', {
-                token: uploadToken, vault
+            // Read and upload chunks without loading the whole file into memory
+            const maxConcurrency = 4;
+            const totalChunks = Math.ceil(file.size / bytesPerChunk);
+            let nextChunkIndex = 0;
+            let activeUploads = 0;
+            let errorOccurred = false;
+
+            const uploadChunk = (chunkIndex) => {
+                return new Promise((resolve, reject) => {
+                    const start = chunkIndex * bytesPerChunk;
+                    const end = Math.min(start + bytesPerChunk, file.size);
+                    const blob = file.File.slice(start, end);
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        try {
+                            const chunk = e.target.result;
+                            const res = await api.files.upload(chunk, start, uploadToken, vault);
+                            if (res.code) throw new Error(res);
+                            bytesTotalUploaded += chunk.byteLength;
+                            updateToast();
+                            resolve();
+                        } catch (err) {
+                            reject(err);
+                        }
+                    };
+                    reader.onerror = (err) => reject(new Error(`File read error: ${err}`));
+                    reader.readAsArrayBuffer(blob);
+                });
+            };
+
+            // Run up to maxConcurrency chunk uploads at a time
+            await new Promise((resolve, reject) => {
+                let finished = 0;
+                function next() {
+                    if (errorOccurred) return;
+                    if (finished === totalChunks) return resolve();
+                    while (activeUploads < maxConcurrency && nextChunkIndex < totalChunks) {
+                        const chunkIdx = nextChunkIndex++;
+                        activeUploads++;
+                        uploadChunk(chunkIdx).then(() => {
+                            activeUploads--;
+                            finished++;
+                            next();
+                        }).catch(err => {
+                            errorOccurred = true;
+                            reject(err);
+                        });
+                    }
+                }
+                next();
             });
+
+            // Finalize the upload
+            const resFinalize = await api.files.uploadFinalize(uploadToken, vault);
+            if (resFinalize.code) throw new Error(resFinalize.message);
             uploadedPaths.push(resFinalize.path);
         } catch (error) {
-            console.error(`Failed to finalize upload for ${file.name}:`, error);
             showToast({
                 type: 'danger',
                 icon: 'error',
                 message: `Failed to upload ${file.pathRel}: ${error.message}`
             });
-            continue;
         }
+        filesUploaded++;
     }
     toast.close();
     showToast({
@@ -176,7 +152,6 @@ const uploadFiles = async files => {
     });
     if (vault == currentVault && currentPath == basePath) {
         await browse(currentVault, currentPath, false, uploadedPaths);
-        await loadVaults();
     }
 };
 
@@ -358,10 +333,7 @@ const actions = {
                 preventClose: true,
                 onClick: async () => {
                     try {
-                        const res = await api.post('/api/files/folder/create', {
-                            vault: currentVault,
-                            path: currentPath + '/' + elInput.value
-                        });
+                        const res = await api.files.folderCreate(currentVault, currentPath + '/' + elInput.value);
                         elModal.close();
                         showToast({
                             type: 'success',
@@ -437,10 +409,7 @@ const actions = {
                         try {
                             filename = file.path.split('/').pop();
                             toast.updateMessage(selectedFiles.length === 1 ? `Deleting ${filename}...` : `Deleting ${selectedFiles.length} files...`);
-                            await api.post('/api/files/delete', {
-                                vault: currentVault,
-                                path: file.path
-                            });
+                            await api.files.delete(currentVault, file.path);
                             countSuccess++;
                         } catch (error) {
                             showToast({
@@ -459,7 +428,6 @@ const actions = {
                         message: countSuccess == 1 ? `Deleted ${filename}!` : `Deleted ${countSuccess} files!`
                     });
                     await browse(currentVault, currentPath, false);
-                    await loadVaults();
                 }
             }, {
                 label: 'Cancel'
@@ -552,11 +520,7 @@ const actions = {
                     }
                     const destPath = file.path.split('/').slice(0, -1).concat(newName).join('/');
                     try {
-                        await api.post('/api/files/move', {
-                            vault: currentVault,
-                            path_src: file.path,
-                            path_dest: destPath
-                        });
+                        await api.files.move(currentVault, file.path, destPath);
                         elModal.close();
                         showToast({
                             type: 'success',
@@ -564,7 +528,6 @@ const actions = {
                             message: `Renamed to ${newName}!`
                         });
                         await browse(currentVault, currentPath, false, [destPath]);
-                        await loadVaults();
                     } catch (error) {
                         elText.textContent = error.message;
                         elText.classList.remove('d-none');
@@ -850,7 +813,8 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
     updateActionButtons();
     let res;
     try {
-        res = await api.get('/api/files/list', { vault, path });
+        res = await api.files.list(vault, path);
+        if (res.code) throw new Error(res.message);
     } catch (error) {
         setStatus(error.message, true);
         isLoaded = isLoadedOld;
@@ -1032,10 +996,13 @@ const browseToCurrentPath = async () => {
 
 const loadVaults = async () => {
     elVaults.innerHTML = '';
-    const res = await api.get('/api/vaults');
+    const res = await api.vaults.list();
+    if (res.code) {
+        showToast({ type: 'danger', icon: 'error', message: res.message });
+        return;
+    }
     res.vaults.sort((a, b) => a.name.localeCompare(b.name));
     for (const vault of res.vaults) {
-        const usagePercent = vault.usedBytes / vault.maxBytes * 100;
         const elVault = document.createElement('button');
         elVault.className = 'btn btn-text vault';
         elVault.innerHTML = /*html*/`
@@ -1043,10 +1010,7 @@ const loadVaults = async () => {
             <div class="d-flex flex-col gap-2 flex-grow">
                 <span class="name"></span>
                 <span class="small">${vault.users.length} member${vault.users.length == 1 ? '' : 's'}</span>
-                <div class="usage-bar flex-no-shrink">
-                    <div class="usage-fill ${usagePercent > 80 ? 'danger' : ''}" style="width: ${usagePercent}%;"></div>
-                </div>
-                <span class="small">${formatBytes(vault.usedBytes)} of ${formatBytes(vault.maxBytes)} used</span>
+                <span class="small">${formatBytes(vault.storage_bytes_available)} available</span>
             </div>
         `;
         elVault.querySelector('.name').textContent = vault.name;
@@ -1061,7 +1025,7 @@ const loadVaults = async () => {
 const init = async () => {
     let isLoggedIn = false;
     try {
-        const res = await api.get('/api/auth');
+        const res = await api.auth.get();
         isLoggedIn = res.success;
         username = res.session.username;
     } catch (error) { }
@@ -1132,7 +1096,7 @@ btnLogin.addEventListener('click', async (e) => {
     const password = inputLoginPassword.value.trim();
     loginFormText.classList.add('d-none');
     try {
-        const res = await api.post('/api/auth/login', {}, { username, password });
+        const res = await api.auth.login(username, password);
         authToken = res.token;
         localStorage.setItem('token', authToken);
         await init();
@@ -1145,7 +1109,7 @@ btnLogin.addEventListener('click', async (e) => {
 });
 
 btnLogout.addEventListener('click', async (e) => {
-    await api.post('/api/auth/logout');
+    await api.auth.logout();
     localStorage.clear();
     window.location.href = '/';
 });

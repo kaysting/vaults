@@ -255,7 +255,7 @@ function showModal({ title, bodyContent, actions, width = 500, grow = true }) {
  * @param {Object} options - The toast configuration.
  * @returns {Object} A controller for the toast with `updateProgress` and `close` methods.
  */
-function showToast({ message, type = 'info', icon, duration = 5000, progressBar = false, actions = [], persistent = false }) {
+function showToast({ message, description, type = 'info', icon, duration = 5000, progressBar = false, actions = [], persistent = false }) {
     let container = document.getElementById('toast-container');
     if (!container) {
         container = document.createElement('div');
@@ -291,10 +291,17 @@ function showToast({ message, type = 'info', icon, duration = 5000, progressBar 
         progressBarHTML = `<div class="toast-progress-bar"></div>`;
     }
 
+    // Add description support
+    let descriptionHTML = '';
+    if (description) {
+        descriptionHTML = `<div class="toast-description">${description}</div>`;
+    }
+
     toast.innerHTML = `
         ${toastIconHTML}
         <div class="toast-content">
             <div class="toast-message"></div>
+            ${descriptionHTML}
         </div>
         ${actionsHTML}
         ${progressBarHTML}
@@ -355,6 +362,17 @@ function showToast({ message, type = 'info', icon, duration = 5000, progressBar 
         updateMessage: (newMessage) => {
             const msgEl = toast.querySelector('.toast-message');
             if (msgEl) msgEl.textContent = newMessage;
+        },
+        updateDescription: (newDescription) => {
+            let descEl = toast.querySelector('.toast-description');
+            if (!descEl && newDescription) {
+                // If description didn't exist, add it
+                descEl = document.createElement('div');
+                descEl.className = 'toast-description';
+                toast.querySelector('.toast-content').appendChild(descEl);
+            }
+            if (descEl) descEl.textContent = newDescription || '';
+            if (descEl && !newDescription) descEl.remove();
         },
         close: closeToast
     };

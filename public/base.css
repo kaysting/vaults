@@ -491,6 +491,15 @@ p:not(:last-child) {
     color: var(--c-text-default);
 }
 
+.toast-description {
+    font-size: 13px;
+    color: var(--c-text-muted);
+    margin-top: 2px;
+    line-height: 1.3;
+    text-align: left;
+    /* Optional: visually separate from message */
+}
+
 .toast-actions {
     display: flex;
     gap: 8px;
