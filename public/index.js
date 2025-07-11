@@ -69,7 +69,6 @@ const uploadFiles = async files => {
         toast.updateProgress((bytesTotalUploaded / bytesTotal) * 100);
         const secsElapsed = (Date.now() - startTime) / 1000;
         const bytesPerSec = bytesTotalUploaded / secsElapsed;
-        const completionPercent = Math.round((bytesTotalUploaded / bytesTotal) * 100);
         const secsRemaining = Math.round((bytesTotal - bytesTotalUploaded) / bytesPerSec);
         const filesRemaining = files.length - filesUploaded;
         toast.updateDescription(`${filesRemaining} file${filesRemaining > 1 ? 's' : ''}, ${msToRelativeTime(secsRemaining * 1000).toLowerCase()} left (${formatBytes(bytesPerSec)}/s)`);
@@ -88,39 +87,7 @@ const uploadFiles = async files => {
     let overwriteFiles = [];
     if (existsFiles.length > 0) {
         // Prompt user to replace or skip
-        await new Promise((resolve) => {
-            const el = document.createElement('div');
-            el.innerHTML = /*html*/`
-                <p>${existsFiles.length === 1
-                    ? `The file <b>${existsFiles[0].file.pathRel}</b> already exists.`
-                    : `${existsFiles.length} files already exist.`} Do you want to replace ${existsFiles.length === 1 ? 'it' : 'them'}?</p>
-            `;
-            const elModal = showModal({
-                title: 'Files already exist',
-                bodyContent: el,
-                actions: [
-                    {
-                        label: 'Replace',
-                        class: 'btn-danger',
-                        onClick: () => {
-                            overwriteFiles = existsFiles.map(r => r.file);
-                            resolve();
-                        }
-                    },
-                    {
-                        label: 'Skip',
-                        class: 'btn-secondary',
-                        onClick: () => {
-                            overwriteFiles = [];
-                            resolve();
-                        }
-                    }
-                ]
-            });
-            elModal.addEventListener('close', () => {
-                resolve();
-            });
-        });
+        overwriteFiles = await promptOverwriteFiles(existsFiles, 'file');
     }
     // For files to overwrite, re-create with overwrite: true
     for (const file of overwriteFiles) {
@@ -542,10 +509,92 @@ const actions = {
         clipboard = [];
         clipboardType = null;
         updateActionButtons();
-        for (const pathSrc of paths) {
-            const pathDest = `${currentPath}/${pathSrc.split('/').pop()}`;
-            console.log(`${type} ${pathSrc} to ${pathDest}`);
+
+        if (!paths.length) return;
+
+        // Prepare file info for progress and overwrite checks
+        const filesToProcess = paths.map(pathSrc => {
+            const destName = pathSrc.split('/').pop();
+            const pathDest = `${currentPath}/${destName}`;
+            return { pathSrc, pathDest, destName };
+        });
+
+        // Step 1: Check for existing destination files/folders
+        const checkExistence = async (vault, fileList) => {
+            // Use api.files.list to get current directory contents
+            const res = await api.files.list(vault, currentPath);
+            if (res.code) throw new Error(res.message);
+            const existingNames = new Set(res.files.map(f => f.name));
+            return fileList.filter(f => existingNames.has(f.destName));
         };
+
+        let existsFiles = [];
+        try {
+            existsFiles = await checkExistence(currentVault, filesToProcess);
+        } catch (err) {
+            showToast({ type: 'danger', icon: 'error', message: `Paste failed: ${err.message}` });
+            return;
+        }
+
+        let overwriteFiles = [];
+        if (existsFiles.length > 0) {
+            // Prompt user to replace or skip
+            overwriteFiles = await promptOverwriteFiles(
+                existsFiles.map(f => ({ file: f })), type === 'cut' ? 'file/folder' : 'file/folder'
+            );
+        }
+
+        // Step 2: Start progress toast
+        let filesProcessed = 0;
+        let countSuccess = 0;
+        const pastedPaths = [];
+        const toast = showToast({
+            icon: type === 'cut' ? 'content_cut' : 'content_copy',
+            message: `${type === 'cut' ? 'Moving' : 'Copying'} ${filesToProcess.length} item${filesToProcess.length === 1 ? '' : 's'}...`,
+            progressBar: true
+        });
+
+        // Step 3: Process each file/folder
+        for (const file of filesToProcess) {
+            const overwrite = overwriteFiles.some(f => f.pathSrc === file.pathSrc);
+            // If file exists and not overwriting, skip
+            if (existsFiles.some(f => f.pathSrc === file.pathSrc) && !overwrite) {
+                filesProcessed++;
+                toast.updateProgress((filesProcessed / filesToProcess.length) * 100);
+                continue;
+            }
+            try {
+                let res;
+                if (type === 'cut') {
+                    res = await api.files.move(currentVault, file.pathSrc, file.pathDest, overwrite);
+                } else {
+                    res = await api.files.copy(currentVault, file.pathSrc, file.pathDest, overwrite);
+                }
+                if (res.code) throw new Error(res.message);
+                countSuccess++;
+                pastedPaths.push(file.pathDest);
+            } catch (error) {
+                showToast({
+                    type: 'danger',
+                    icon: 'error',
+                    message: `Failed to ${type === 'cut' ? 'move' : 'copy'} ${file.destName}: ${error.message}`
+                });
+            }
+            filesProcessed++;
+            toast.updateProgress((filesProcessed / filesToProcess.length) * 100);
+        }
+        toast.close();
+        showToast({
+            type: 'success',
+            icon: type === 'cut' ? 'content_cut' : 'content_copy',
+            message: `${type === 'cut' ? 'Moved' : 'Copied'} ${countSuccess} item${countSuccess === 1 ? '' : 's'}!`
+        });
+        // Select pasted files if still in same directory
+        if (currentPath === filesToProcess[0]?.pathDest.split('/').slice(0, -1).join('/')) {
+            await browse(currentVault, currentPath, false, pastedPaths);
+        } else {
+            await browse(currentVault, currentPath, false);
+        }
     },
     rename: async () => {
         const selectedFiles = getSelectedFiles();
@@ -656,6 +705,52 @@ const actions = {
         const url = await generateDownloadLink(currentVault, [file.path]);
         startFileDownload(url, file.name);
     }
+};
+
+// Reusable skip/replace prompt for overwrite conflicts
+const promptOverwriteFiles = async (existsFiles, singleLabel = 'file') => {
+    let overwriteFiles = [];
+    await new Promise((resolve) => {
+        const el = document.createElement('div');
+        // Fix: always show a valid name for the file/folder
+        const getName = file =>
+            file.destName ||
+            file.pathRel ||
+            file.name ||
+            (file.file && (file.file.destName || file.file.pathRel || file.file.name)) ||
+            'unknown';
+        el.innerHTML = /*html*/`
+            <p>${existsFiles.length === 1
+                ? `The ${singleLabel} <b>${getName(existsFiles[0].file || existsFiles[0])}</b> already exists.`
+                : `${existsFiles.length} ${singleLabel}s already exist.`} Do you want to replace ${existsFiles.length === 1 ? 'it' : 'them'}?</p>
+        `;
+        const elModal = showModal({
+            title: `${singleLabel[0].toUpperCase() + singleLabel.slice(1)}s already exist`,
+            bodyContent: el,
+            actions: [
+                {
+                    label: 'Replace',
+                    class: 'btn-danger',
+                    onClick: () => {
+                        overwriteFiles = existsFiles.map(r => r.file || r);
+                        resolve();
+                    }
+                },
+                {
+                    label: 'Skip',
+                    class: 'btn-secondary',
+                    onClick: () => {
+                        overwriteFiles = [];
+                        resolve();
+                    }
+                }
+            ]
+        });
+        elModal.addEventListener('close', () => {
+            resolve();
+        });
+    });
+    return overwriteFiles;
 };
 
 const showFileContextMenu = (e) => {

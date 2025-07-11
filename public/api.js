@@ -82,10 +82,22 @@ const initApi = (authToken) => ({
                 return { code: resp.code, message: resp.message || error.toString() };
             }
         },
-        move: async (vault, path_src, path_dest) => {
+        move: async (vault, path_src, path_dest, overwrite = false) => {
             try {
                 const res = await axios.post('/api/files/move', null, {
-                    params: { vault, path_src, path_dest },
+                    params: { vault, path_src, path_dest, overwrite: overwrite ? 'true' : '' },
+                    headers: { Authorization: `Bearer ${authToken}` }
+                });
+                return res.data;
+            } catch (error) {
+                const resp = error.response?.data || {};
+                return { code: resp.code, message: resp.message || error.toString() };
+            }
+        },
+        copy: async (vault, path_src, path_dest, overwrite = false) => {
+            try {
+                const res = await axios.post('/api/files/copy', null, {
+                    params: { vault, path_src, path_dest, overwrite: overwrite ? 'true' : '' },
                     headers: { Authorization: `Bearer ${authToken}` }
                 });
                 return res.data;

@@ -1,4 +1,8 @@
+// =======================
+// Imports and Setup
+// =======================
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -6,9 +10,11 @@ const sqlite3 = require('better-sqlite3');
 const bcrypt = require('bcrypt');
 const archiver = require('archiver');
 const diskusage = require('diskusage');
-
 const config = require('./config.json');
 
+// =======================
+// Logging
+// =======================
 const log = (level, message, details = {}) => {
     const timestamp = new Date().toISOString();
     let userIdentifier = details.ip || 'SYSTEM';
@@ -25,8 +31,10 @@ const log = (level, message, details = {}) => {
     }
 };
 
+// =======================
+// Database Setup
+// =======================
 const db = sqlite3(path.join(__dirname, 'state.db'));
-
 db.prepare(`CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     username TEXT NOT NULL,
@@ -55,27 +63,19 @@ db.prepare(`CREATE TABLE IF NOT EXISTS uploads (
 )`).run();
 db.pragma('foreign_keys = ON');
 
+// =======================
+// Utility Functions
+// =======================
 const getSecureRandomHex = (length) => {
     return crypto.randomBytes(length).toString('hex').slice(0, length);
 };
 
-const expireOldSessions = () => {
-    const now = Date.now();
-    const expiryMs = config.server.inactive_session_expire_days * 24 * 60 * 60 * 1000;
-    const stmt = db.prepare(`DELETE FROM sessions WHERE accessed < ?`);
-    const changes = stmt.run(now - expiryMs).changes;
-    if (changes > 0) {
-        log('info', `Removed ${changes} unused sessions`);
-    }
-};
-
-const expireOldDownloads = () => {
-    const now = Date.now();
-    const expiryMs = config.server.download_expire_days * 24 * 60 * 60 * 1000;
-    const stmt = db.prepare(`DELETE FROM downloads WHERE created < ?`);
-    const changes = stmt.run(now - expiryMs).changes;
-    if (changes > 0) {
-        log('info', `Removed ${changes} old download links`);
+const fileExists = async (filePath) => {
+    try {
+        await fsp.access(filePath);
+        return true;
+    } catch {
+        return false;
     }
 };
 
@@ -96,18 +96,124 @@ const getVaultDiskStats = async (vault) => {
     }
 };
 
-expireOldSessions();
-expireOldDownloads();
-setInterval(() => {
+const getCleanPaths = (vault, pathDirty) => {
+    // Normalize and resolve path, then ensure it's within the vault
+    const rel = path.normalize('/' + (pathDirty || ''));
+    const abs = path.join(vault.path, rel);
+    // Security: Prevent path traversal outside the vault
+    const vaultRoot = path.resolve(vault.path);
+    const absResolved = path.resolve(abs);
+    if (!absResolved.startsWith(vaultRoot + path.sep) && absResolved !== vaultRoot) {
+        throw new Error('Path traversal detected');
+    }
+    return { rel, abs: absResolved };
+};
+
+// =======================
+// Cleanup/Expiration Functions
+// =======================
+const expireOldSessions = () => {
+    const now = Date.now();
+    const expiryMs = config.server.inactive_session_expire_days * 24 * 60 * 60 * 1000;
+    const stmt = db.prepare(`DELETE FROM sessions WHERE accessed < ?`);
+    const changes = stmt.run(now - expiryMs).changes;
+    if (changes > 0) {
+        log('info', `Removed ${changes} unused sessions`);
+    }
+};
+
+const expireOldDownloads = () => {
+    const now = Date.now();
+    const expiryMs = config.server.download_expire_days * 24 * 60 * 60 * 1000;
+    const stmt = db.prepare(`DELETE FROM downloads WHERE created < ?`);
+    const changes = stmt.run(now - expiryMs).changes;
+    if (changes > 0) {
+        log('info', `Removed ${changes} old download links`);
+    }
+};
+
+const expireOldUploads = async () => {
+    const now = Date.now();
+    const expiryMs = config.server.upload_expire_hours * 60 * 60 * 1000;
+    const oldUploads = db.prepare(`SELECT token, path_temp FROM uploads`).all();
+    let removed = 0;
+    for (const upload of oldUploads) {
+        try {
+            const stat = await fsp.stat(upload.path_temp).catch(() => null);
+            // If file doesn't exist or is too old, remove db entry and file
+            if (!stat || (stat.mtimeMs < (now - expiryMs))) {
+                await fsp.unlink(upload.path_temp).catch(() => { });
+                db.prepare(`DELETE FROM uploads WHERE token = ?`).run(upload.token);
+                removed++;
+            }
+        } catch (e) {
+            // Ignore errors
+        }
+    }
+    if (removed > 0) {
+        log('info', `Removed ${removed} old unfinished uploads`);
+    }
+};
+
+// =======================
+// Rate Limiting
+// =======================
+const authRateLimit = {};
+const AUTH_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const AUTH_LIMIT_MAX_ATTEMPTS = 10;
+
+const cleanupAuthRateLimit = () => {
+    const now = Date.now();
+    for (const ip in authRateLimit) {
+        if (authRateLimit[ip].last + AUTH_LIMIT_WINDOW_MS < now) {
+            delete authRateLimit[ip];
+        }
+    }
+};
+setInterval(cleanupAuthRateLimit, 60 * 1000);
+
+const authRateLimiter = (req, res, next) => {
+    const ip = req.ipaddr || req.headers['cf-connecting-ip'] || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    if (!authRateLimit[ip]) {
+        authRateLimit[ip] = { count: 0, last: now };
+    }
+    const entry = authRateLimit[ip];
+    if (entry.last + AUTH_LIMIT_WINDOW_MS < now) {
+        entry.count = 0;
+        entry.last = now;
+    }
+    entry.count += 1;
+    entry.last = now;
+    if (entry.count > AUTH_LIMIT_MAX_ATTEMPTS) {
+        return res.sendError(429, 'rate_limited', 'Too many authentication attempts. Please try again later.');
+    }
+    next();
+};
+
+// =======================
+// Cleanup Scheduler
+// =======================
+const cleanupExpiredState = async () => {
     expireOldSessions();
     expireOldDownloads();
-}, 60 * 1000);
+    await expireOldUploads();
+    cleanupAuthRateLimit();
+};
+cleanupExpiredState();
+setInterval(cleanupExpiredState, 60 * 1000);
 
+// =======================
+// Express App Setup
+// =======================
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(express.raw({ limit: '16mb', type: 'application/octet-stream' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// =======================
+// Middleware
+// =======================
 app.use((req, res, next) => {
     const start = Date.now();
     const ip = req.headers['cf-connecting-ip'] || req.socket.remoteAddress || 'unknown';
@@ -129,7 +235,10 @@ app.use((req, res, next) => {
     next();
 });
 
-app.post('/api/auth/login', async (req, res) => {
+// =======================
+// API Endpoints
+// =======================
+app.post('/api/auth/login', authRateLimiter, async (req, res) => {
     const username = req.body.username;
     const password = req.body.password;
     if (!username || !password) {
@@ -187,6 +296,7 @@ app.get('/api/vaults', requireAuth, async (req, res) => {
     res.json({ success: true, vaults });
 });
 
+// Middleware: Require user access to the requested vault
 const requireVaultAccess = (req, res, next) => {
     const vaultName = req.query.vault;
     const vault = config.vaults.find(v => v.name === vaultName);
@@ -200,33 +310,42 @@ const requireVaultAccess = (req, res, next) => {
     res.sendError(403, 'forbidden', 'You do not have access to this vault');
 };
 
-const getCleanPaths = (vault, pathDirty) => {
-    const rel = path.normalize('/' + (pathDirty || ''));
-    const abs = path.join(vault.path, rel);
-    return { rel, abs };
+// Middleware: Validate and resolve a vault-relative path from req.query.path
+const resolveVaultPath = (req, res, next) => {
+    try {
+        const { rel, abs } = getCleanPaths(req.vault, req.query.path);
+        req.pathRel = rel;
+        req.pathAbs = abs;
+        next();
+    } catch {
+        res.sendError(400, 'invalid_path', 'Invalid or unsafe path');
+    }
 };
 
-const getRequestPaths = (req, res, next) => {
-    const paths = getCleanPaths(req.vault, req.query.path);
-    req.pathRel = paths.rel;
-    req.pathAbs = paths.abs;
-    return next();
+// Middleware: Double-check req.pathAbs is within vault root
+const checkVaultRoot = (req, res, next) => {
+    const vaultRoot = path.resolve(req.vault.path);
+    const absResolved = path.resolve(req.pathAbs);
+    if (!absResolved.startsWith(vaultRoot + path.sep) && absResolved !== vaultRoot) {
+        return res.sendError(400, 'invalid_path', 'Invalid or unsafe path');
+    }
+    next();
 };
 
-app.get('/api/files/list', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
-    if (!fs.existsSync(req.pathAbs)) {
+app.get('/api/files/list', requireAuth, requireVaultAccess, resolveVaultPath, async (req, res) => {
+    if (!await fileExists(req.pathAbs)) {
         return res.sendError(404, 'not_found', 'No file exists at the requested path');
     }
-    const stats = await fs.promises.stat(req.pathAbs).catch(() => { return {}; });
+    const stats = await fsp.stat(req.pathAbs).catch(() => { return {}; });
     if (!stats.isDirectory()) {
         return res.sendError(400, 'not_directory', 'The file at the requested path is not a directory');
     }
-    const fileNames = await fs.promises.readdir(req.pathAbs).catch(() => []);
+    const fileNames = await fsp.readdir(req.pathAbs).catch(() => []);
     const files = [];
     for (const fileName of fileNames) {
         const filePathAbs = path.join(req.pathAbs, fileName);
         const filePathRel = path.join(req.pathRel, fileName);
-        const stats = await fs.promises.stat(filePathAbs).catch(() => { return {}; });
+        const stats = await fsp.stat(filePathAbs).catch(() => { return {}; });
         files.push({
             name: fileName,
             path: filePathRel,
@@ -238,19 +357,19 @@ app.get('/api/files/list', requireAuth, requireVaultAccess, getRequestPaths, asy
     res.json({ success: true, path: req.pathRel, files });
 });
 
-app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
-    if (!fs.existsSync(req.pathAbs)) {
+app.post('/api/files/delete', requireAuth, requireVaultAccess, resolveVaultPath, checkVaultRoot, async (req, res) => {
+    if (!await fileExists(req.pathAbs)) {
         return res.sendError(404, 'not_found', 'No file exists at the requested path');
     }
     if (!req.pathRel || req.pathRel === '/') {
         return res.sendError(400, 'root_delete', 'The root directory itself cannot be deleted');
     }
     try {
-        const stats = await fs.promises.lstat(req.pathAbs);
+        const stats = await fsp.lstat(req.pathAbs);
         if (stats.isDirectory()) {
-            await fs.promises.rm(req.pathAbs, { recursive: true, force: true });
+            await fsp.rm(req.pathAbs, { recursive: true, force: true });
         } else {
-            await fs.promises.unlink(req.pathAbs);
+            await fsp.unlink(req.pathAbs);
         }
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
@@ -260,33 +379,37 @@ app.post('/api/files/delete', requireAuth, requireVaultAccess, getRequestPaths, 
 });
 
 const removeIfExists = async (absPath) => {
-    if (fs.existsSync(absPath)) {
-        const stats = await fs.promises.lstat(absPath);
+    if (await fileExists(absPath)) {
+        const stats = await fsp.lstat(absPath);
         if (stats.isDirectory()) {
-            await fs.promises.rm(absPath, { recursive: true, force: true });
+            await fsp.rm(absPath, { recursive: true, force: true });
         } else {
-            await fs.promises.unlink(absPath);
+            await fsp.unlink(absPath);
         }
     }
 };
 
 const handleMoveCopy = async (req, res, action) => {
     let pathFrom, pathTo;
-    if (req.query.path_src && req.query.path_dest) {
-        pathFrom = getCleanPaths(req.vault, req.query.path_src);
-        pathTo = getCleanPaths(req.vault, req.query.path_dest);
-    } else {
-        return res.sendError(400, 'missing_path', 'Missing path_src or path_dest');
+    try {
+        if (req.query.path_src && req.query.path_dest) {
+            pathFrom = getCleanPaths(req.vault, req.query.path_src);
+            pathTo = getCleanPaths(req.vault, req.query.path_dest);
+        } else {
+            return res.sendError(400, 'missing_path', 'Missing path_src or path_dest');
+        }
+    } catch (e) {
+        return res.sendError(400, 'invalid_path', 'Invalid or unsafe path');
     }
 
     // Support overwrite query param
     const overwrite = req.query.overwrite === 'true';
 
-    if (!fs.existsSync(pathFrom.abs)) {
+    if (!await fileExists(pathFrom.abs)) {
         return res.sendError(404, 'src_not_found', 'Source file does not exist');
     }
-    if (fs.existsSync(pathTo.abs)) {
-        const destStats = await fs.promises.lstat(pathTo.abs);
+    if (await fileExists(pathTo.abs)) {
+        const destStats = await fsp.lstat(pathTo.abs);
         if (destStats.isDirectory()) {
             // Don't allow overwriting a directory
             return res.sendError(400, 'dest_is_directory', 'Cannot overwrite a directory');
@@ -303,18 +426,26 @@ const handleMoveCopy = async (req, res, action) => {
     }
 
     try {
-        if (fs.existsSync(pathTo.abs) && overwrite) {
+        // Security: Double-check both paths are within vault before operation
+        const vaultRoot = path.resolve(req.vault.path);
+        if (
+            !pathFrom.abs.startsWith(vaultRoot + path.sep) && pathFrom.abs !== vaultRoot ||
+            !pathTo.abs.startsWith(vaultRoot + path.sep) && pathTo.abs !== vaultRoot
+        ) {
+            return res.sendError(400, 'invalid_path', 'Invalid or unsafe path');
+        }
+        if (await fileExists(pathTo.abs) && overwrite) {
             await removeIfExists(pathTo.abs);
         }
         if (action === 'move') {
-            await fs.promises.rename(pathFrom.abs, pathTo.abs);
+            await fsp.rename(pathFrom.abs, pathTo.abs);
             res.json({ success: true, oldPath: pathFrom.rel, newPath: pathTo.rel, overwrite });
         } else if (action === 'copy') {
             const copyRecursive = async (src, dest) => {
-                const stats = await fs.promises.stat(src);
+                const stats = await fsp.stat(src);
                 if (stats.isDirectory()) {
-                    await fs.promises.mkdir(dest, { recursive: true });
-                    const entries = await fs.promises.readdir(src);
+                    await fsp.mkdir(dest, { recursive: true });
+                    const entries = await fsp.readdir(src);
                     for (const entry of entries) {
                         await copyRecursive(
                             path.join(src, entry),
@@ -322,7 +453,7 @@ const handleMoveCopy = async (req, res, action) => {
                         );
                     }
                 } else {
-                    await fs.promises.copyFile(src, dest);
+                    await fsp.copyFile(src, dest);
                 }
             };
             await copyRecursive(pathFrom.abs, pathTo.abs);
@@ -342,12 +473,12 @@ app.post('/api/files/copy', requireAuth, requireVaultAccess, async (req, res) =>
     await handleMoveCopy(req, res, 'copy');
 });
 
-app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
-    if (fs.existsSync(req.pathAbs)) {
+app.post('/api/files/folder/create', requireAuth, requireVaultAccess, resolveVaultPath, checkVaultRoot, async (req, res) => {
+    if (await fileExists(req.pathAbs)) {
         return res.sendError(400, 'exists', 'A file or folder already exists at the requested path');
     }
     try {
-        await fs.promises.mkdir(req.pathAbs, { recursive: true });
+        await fsp.mkdir(req.pathAbs, { recursive: true });
         res.json({ success: true, path: req.pathRel });
     } catch (err) {
         log('error', `Error creating folder at ${req.pathRel} in vault ${req.vault.name}`, { ip: req.ipaddr, username: req.username, error: err });
@@ -355,11 +486,11 @@ app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequest
     }
 });
 
-app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
+app.post('/api/files/upload/create', requireAuth, requireVaultAccess, resolveVaultPath, checkVaultRoot, async (req, res) => {
     // Support overwrite query param
     const overwrite = req.query.overwrite === 'true';
-    if (fs.existsSync(req.pathAbs)) {
-        const destStats = await fs.promises.lstat(req.pathAbs);
+    if (await fileExists(req.pathAbs)) {
+        const destStats = await fsp.lstat(req.pathAbs);
         if (destStats.isDirectory()) {
             // Don't allow overwriting a directory
             return res.sendError(400, 'dest_is_directory', 'Cannot overwrite a directory');
@@ -394,6 +525,12 @@ app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) 
     if (!upload) {
         return res.sendError(404, 'invalid_token', 'Invalid or expired upload token');
     }
+    // Security: Double-check temp path is within vault
+    const vaultRoot = path.resolve(req.vault.path);
+    const absResolved = path.resolve(upload.path_temp);
+    if (!absResolved.startsWith(vaultRoot + path.sep) && absResolved !== vaultRoot) {
+        return res.sendError(400, 'invalid_path', 'Invalid or unsafe path');
+    }
     if (!req.is('application/octet-stream')) {
         return res.sendError(400, 'invalid_content_type', 'Invalid content type, expected application/octet-stream');
     }
@@ -408,12 +545,12 @@ app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) 
     const offsetNum = Number(offset);
     const tempFilePath = upload.path_temp;
     try {
-        await fs.promises.mkdir(path.dirname(tempFilePath), { recursive: true });
+        await fsp.mkdir(path.dirname(tempFilePath), { recursive: true });
         // Open file for reading and writing, create if not exists
-        const fd = await fs.promises.open(tempFilePath, 'r+').catch(async err => {
+        const fd = await fsp.open(tempFilePath, 'r+').catch(async err => {
             if (err.code === 'ENOENT') {
                 // If file doesn't exist, create it
-                return await fs.promises.open(tempFilePath, 'w+');
+                return await fsp.open(tempFilePath, 'w+');
             }
             throw err;
         });
@@ -426,7 +563,7 @@ app.post('/api/files/upload', requireAuth, requireVaultAccess, async (req, res) 
     } catch (err) {
         log('error', `Error during file upload chunk for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
         // Cancel upload on error
-        await fs.promises.unlink(tempFilePath).catch(() => { });
+        await fsp.unlink(tempFilePath).catch(() => { });
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
         return res.sendError(500, 'upload_failed', 'Failed to upload file chunk. Upload canceled.');
     }
@@ -441,16 +578,16 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
         return res.sendError(404, 'invalid_token', 'Invalid or expired upload token');
     }
     const tempFilePath = upload.path_temp;
-    if (!fs.existsSync(tempFilePath)) {
+    if (!await fileExists(tempFilePath)) {
         return res.sendError(400, 'no_data', 'No data has been uploaded');
     }
     // Check file size matches expected size
-    const stat = await fs.promises.stat(tempFilePath).catch(() => null);
+    const stat = await fsp.stat(tempFilePath).catch(() => null);
     if (!stat || stat.size !== upload.size) {
         return res.sendError(400, 'incomplete_upload', 'Uploaded file is incomplete or missing chunks');
     }
-    if (fs.existsSync(upload.path_dest)) {
-        const destStats = await fs.promises.lstat(upload.path_dest);
+    if (await fileExists(upload.path_dest)) {
+        const destStats = await fsp.lstat(upload.path_dest);
         if (destStats.isDirectory()) {
             // Don't allow overwriting a directory
             return res.sendError(400, 'dest_is_directory', 'Cannot overwrite a directory');
@@ -461,19 +598,19 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
     }
     try {
         // No quota check (already checked at creation)
-        await fs.promises.mkdir(path.dirname(upload.path_dest), { recursive: true });
+        await fsp.mkdir(path.dirname(upload.path_dest), { recursive: true });
         // If overwriting, remove the existing file first
-        if (overwrite && fs.existsSync(upload.path_dest)) {
-            await fs.promises.unlink(upload.path_dest);
+        if (overwrite && await fileExists(upload.path_dest)) {
+            await fsp.unlink(upload.path_dest);
         }
-        await fs.promises.rename(tempFilePath, upload.path_dest);
+        await fsp.rename(tempFilePath, upload.path_dest);
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
         const paths = getCleanPaths(req.vault, upload.path_dest.replace(req.vault.path, ''));
         res.json({ success: true, path: paths.rel, overwrite });
     } catch (err) {
         log('error', `Error finalizing file upload for ${token}`, { ip: req.ipaddr, username: req.username, error: err });
         // Cancel upload on error
-        await fs.promises.unlink(tempFilePath).catch(() => { });
+        await fsp.unlink(tempFilePath).catch(() => { });
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
         return res.sendError(500, 'finalize_failed', 'Failed to finalize file upload. Upload canceled.');
     }
@@ -491,7 +628,7 @@ app.post('/api/files/upload/cancel', requireAuth, async (req, res) => {
     const tempFilePath = upload.path_temp;
     try {
         // Remove temp file
-        await fs.promises.unlink(tempFilePath).catch(() => { });
+        await fsp.unlink(tempFilePath).catch(() => { });
         db.prepare(`DELETE FROM uploads WHERE token = ?`).run(token);
         res.json({ success: true });
     } catch (err) {
@@ -519,11 +656,16 @@ app.post('/api/files/download/add', requireAuth, requireVaultAccess, async (req,
     }
     const pathsClean = [];
     for (const pathRelDirty of paths) {
-        const path = getCleanPaths(req.vault, pathRelDirty);
-        if (!fs.existsSync(path.abs)) {
+        let pathObj;
+        try {
+            pathObj = getCleanPaths(req.vault, pathRelDirty);
+        } catch (e) {
+            return res.sendError(400, 'invalid_path', 'Invalid or unsafe path');
+        }
+        if (!await fileExists(pathObj.abs)) {
             return res.sendError(404, 'not_found', `File not found in vault ${req.vault}: ${pathRelDirty}`);
         }
-        pathsClean.push(path);
+        pathsClean.push(pathObj);
     }
     for (const path of pathsClean) {
         db.prepare(`INSERT OR IGNORE INTO download_files (token, path) VALUES (?, ?)`)
@@ -561,7 +703,7 @@ app.get('/api/files/download', requireDownloadToken, async (req, res) => {
     if (paths.length === 1) {
         const pathRel = paths[0];
         const pathAbs = path.join(vaultConfig.path, pathRel);
-        const stats = await fs.promises.stat(pathAbs).catch(() => null);
+        const stats = await fsp.stat(pathAbs).catch(() => null);
         if (!stats) {
             return res.sendError(404, 'not_found', 'The file this download link points to no longer exists');
         }
@@ -588,14 +730,19 @@ app.get('/dl/:token{/:filename}', requireDownloadToken, async (req, res) => {
     let filename = 'files';
     if (paths.length === 1) {
         const pathRel = paths[0];
-        const pathAbs = path.join(vault.path, pathRel);
-        const stats = await fs.promises.stat(pathAbs).catch(() => null);
+        let pathAbs;
+        try {
+            pathAbs = getCleanPaths(vault, pathRel).abs;
+        } catch (e) {
+            return res.status(400).end('Invalid or unsafe path');
+        }
+        const stats = await fsp.stat(pathAbs).catch(() => null);
         if (!stats) {
             return res.status(404).end('The file this download link points to no longer exists');
         }
         filename = path.basename(pathRel);
         if (stats.isDirectory()) {
-            paths = (await fs.promises.readdir(pathAbs).catch(() => [])).map(file => path.join(pathRel, file));
+            paths = (await fsp.readdir(pathAbs).catch(() => [])).map(file => path.join(pathRel, file));
         } else {
             return res.sendFile(pathAbs, { dotfiles: 'allow' });
         }
@@ -627,29 +774,45 @@ app.get('/dl/:token{/:filename}', requireDownloadToken, async (req, res) => {
     });
     archive.pipe(res);
     for (const pathRel of paths) {
-        const pathAbs = path.join(vault.path, pathRel);
-        if (!fs.existsSync(pathAbs)) {
+        let pathAbs;
+        try {
+            pathAbs = getCleanPaths(vault, pathRel).abs;
+        } catch (e) {
+            log('warn', `Invalid or unsafe path during zip creation, skipping: ${pathRel}`, { ip: ipaddr, username });
+            continue;
+        }
+        if (!await fileExists(pathAbs)) {
             log('warn', `File not found during zip creation, skipping: ${pathAbs}`, { ip: ipaddr, username });
             continue;
         }
-        const stats = await fs.promises.stat(pathAbs);
+        const stats = await fsp.stat(pathAbs);
+        // Zip slip prevention: ensure archive entry name does not contain '..' or absolute paths
+        const entryName = path.basename(pathRel);
         if (stats.isDirectory()) {
-            archive.directory(pathAbs, path.basename(pathRel));
+            archive.directory(pathAbs, entryName);
         } else {
-            archive.file(pathAbs, { name: path.basename(pathRel) });
+            archive.file(pathAbs, { name: entryName });
         }
     }
     archive.finalize();
 });
 
 app.use((req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    // Only serve index.html for GET requests
+    if (req.method === 'GET') {
+        res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    } else {
+        res.status(404).end();
+    }
 });
 
 app.listen(config.server.port, () => {
     log('info', `Server is running on port ${config.server.port}`);
 });
 
+// =======================
+// Process Signal Handling
+// =======================
 process.on('uncaughtException', (err) => {
     log('error', 'Uncaught Exception:', { error: err });
     db.close();
