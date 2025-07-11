@@ -115,7 +115,7 @@ p {
 }
 
 p:not(:last-child) {
-    margin-bottom: 0.8em;
+    margin-bottom: 0.5em;
 }
 
 ::selection {
@@ -444,6 +444,7 @@ p:not(:last-child) {
     display: flex;
     align-items: center;
     max-width: 400px;
+    min-width: 250px;
     background-color: var(--c-bg-lighter);
     border: 1px solid var(--c-border);
     border-radius: 8px;

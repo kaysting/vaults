@@ -94,10 +94,10 @@ const initApi = (authToken) => ({
                 return { code: resp.code, message: resp.message || error.toString() };
             }
         },
-        uploadCreate: async (vault, path, size) => {
+        uploadCreate: async (vault, path, size, overwrite = false) => {
             try {
                 const res = await axios.post('/api/files/upload/create', null, {
-                    params: { vault, path, size },
+                    params: { vault, path, size, overwrite: overwrite ? 'true' : '' },
                     headers: { Authorization: `Bearer ${authToken}` }
                 });
                 return res.data;
@@ -122,10 +122,10 @@ const initApi = (authToken) => ({
                 return { code: resp.code, message: resp.message || error.toString() };
             }
         },
-        uploadFinalize: async (token, vault) => {
+        uploadFinalize: async (token, vault, overwrite = false) => {
             try {
                 const res = await axios.post('/api/files/upload/finalize', null, {
-                    params: { token, vault },
+                    params: { token, vault, overwrite: overwrite ? 'true' : '' },
                     headers: { Authorization: `Bearer ${authToken}` }
                 });
                 return res.data;

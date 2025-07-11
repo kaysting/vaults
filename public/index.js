@@ -41,12 +41,15 @@ const generateDownloadLinkFromSelection = async () => {
 };
 
 const uploadFiles = async files => {
+    // Restructure files array
     files = files.map(file => ({
         File: file,
         name: file.name,
         pathRel: file.webkitRelativePath || file.relativePath || file.name,
         size: file.size
     }));
+    console.log(files);
+    // Initialize upload state
     const uploadedPaths = [];
     const bytesPerChunk = 1024 * 1024 * 4;
     const bytesTotal = files.reduce((sum, file) => sum + file.size, 0);
@@ -55,29 +58,93 @@ const uploadFiles = async files => {
     const startTime = Date.now();
     const vault = currentVault;
     const basePath = currentPath;
+    // Create progress toast
     const toast = showToast({
         icon: 'upload',
         message: files.length == 1 ? `Uploading ${files[0].name}...` : `Uploading ${files.length} files...`,
         progressBar: true
     });
+    // Function to update the progress toast
     const updateToast = () => {
         toast.updateProgress((bytesTotalUploaded / bytesTotal) * 100);
         const secsElapsed = (Date.now() - startTime) / 1000;
         const bytesPerSec = bytesTotalUploaded / secsElapsed;
         const completionPercent = Math.round((bytesTotalUploaded / bytesTotal) * 100);
-        toast.updateDescription(`${completionPercent}%, ${filesUploaded + 1}/${files.length}, ${formatBytes(bytesPerSec)}/s`);
+        const secsRemaining = Math.round((bytesTotal - bytesTotalUploaded) / bytesPerSec);
+        const filesRemaining = files.length - filesUploaded;
+        toast.updateDescription(`${filesRemaining} file${filesRemaining > 1 ? 's' : ''}, ${msToRelativeTime(secsRemaining * 1000).toLowerCase()} left (${formatBytes(bytesPerSec)}/s)`);
     };
+    // Create all uploads
+    const createResults = [];
+    let i = 1;
     for (const file of files) {
         const resCreate = await api.files.uploadCreate(vault, `${basePath}/${file.pathRel}`, file.size);
-        if (resCreate.code) {
+        toast.updateDescription(`Initializing ${i}/${files.length}...`);
+        createResults.push({ file, resCreate });
+        i++;
+    }
+    // Find files that already exist
+    const existsFiles = createResults.filter(r => r.resCreate.code === 'exists');
+    let overwriteFiles = [];
+    if (existsFiles.length > 0) {
+        // Prompt user to replace or skip
+        await new Promise((resolve) => {
+            const el = document.createElement('div');
+            el.innerHTML = /*html*/`
+                <p>${existsFiles.length === 1
+                    ? `The file <b>${existsFiles[0].file.pathRel}</b> already exists.`
+                    : `${existsFiles.length} files already exist.`} Do you want to replace ${existsFiles.length === 1 ? 'it' : 'them'}?</p>
+            `;
+            const elModal = showModal({
+                title: 'Files already exist',
+                bodyContent: el,
+                actions: [
+                    {
+                        label: 'Replace',
+                        class: 'btn-danger',
+                        onClick: () => {
+                            overwriteFiles = existsFiles.map(r => r.file);
+                            resolve();
+                        }
+                    },
+                    {
+                        label: 'Skip',
+                        class: 'btn-secondary',
+                        onClick: () => {
+                            overwriteFiles = [];
+                            resolve();
+                        }
+                    }
+                ]
+            });
+            elModal.addEventListener('close', () => {
+                resolve();
+            });
+        });
+    }
+    // For files to overwrite, re-create with overwrite: true
+    for (const file of overwriteFiles) {
+        const idx = createResults.findIndex(r => r.file === file);
+        createResults[idx].resCreate = await api.files.uploadCreate(vault, `${basePath}/${file.pathRel}`, file.size, true);
+    }
+    // Upload all files that have a valid token
+    for (const { file, resCreate } of createResults) {
+        if (resCreate.code && resCreate.code !== 'exists') {
             showToast({
                 type: 'danger',
                 icon: 'error',
                 message: `Failed to start upload for ${file.pathRel}: ${resCreate.message}`
             });
+            filesUploaded++;
+            continue;
+        }
+        if (resCreate.code === 'exists' && !overwriteFiles.includes(file)) {
+            // User chose to skip this file
+            filesUploaded++;
             continue;
         }
         const uploadToken = resCreate.token;
+        const overwrite = overwriteFiles.includes(file);
         try {
             // Read and upload chunks without loading the whole file into memory
             const maxConcurrency = 4;
@@ -95,9 +162,11 @@ const uploadFiles = async files => {
                     reader.onload = async (e) => {
                         try {
                             const chunk = e.target.result;
-                            const res = await api.files.upload(chunk, start, uploadToken, vault);
+                            const res = await api.files.upload(chunk, start, uploadToken, vault, (progress) => {
+                                bytesTotalUploaded += progress.bytes;
+                                updateToast();
+                            });
                             if (res.code) throw new Error(res);
-                            bytesTotalUploaded += chunk.byteLength;
                             updateToast();
                             resolve();
                         } catch (err) {
@@ -131,8 +200,9 @@ const uploadFiles = async files => {
                 next();
             });
 
-            // Finalize the upload
-            const resFinalize = await api.files.uploadFinalize(uploadToken, vault);
+            // Finalize the upload (with overwrite if needed)
+            console.log(file.pathRel, overwrite);
+            const resFinalize = await api.files.uploadFinalize(uploadToken, vault, overwrite);
             if (resFinalize.code) throw new Error(resFinalize.message);
             uploadedPaths.push(resFinalize.path);
         } catch (error) {
@@ -818,6 +888,10 @@ const browse = async (vault, path = '/', shouldPushState = true, selectFiles = [
     } catch (error) {
         setStatus(error.message, true);
         isLoaded = isLoadedOld;
+        elBreadcrumbs.innerHTML = '';
+        elBreadcrumbs.innerHTML = /*html*/`
+            <button class="btn btn-text current">Vaults</button>
+        `;
         return;
     }
     if (shouldPushState) {

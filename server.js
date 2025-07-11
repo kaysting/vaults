@@ -285,8 +285,15 @@ const handleMoveCopy = async (req, res, action) => {
     if (!fs.existsSync(pathFrom.abs)) {
         return res.sendError(404, 'src_not_found', 'Source file does not exist');
     }
-    if (fs.existsSync(pathTo.abs) && !overwrite) {
-        return res.sendError(400, 'dest_exists', 'Destination file already exists');
+    if (fs.existsSync(pathTo.abs)) {
+        const destStats = await fs.promises.lstat(pathTo.abs);
+        if (destStats.isDirectory()) {
+            // Don't allow overwriting a directory
+            return res.sendError(400, 'dest_is_directory', 'Cannot overwrite a directory');
+        }
+        if (!overwrite) {
+            return res.sendError(400, 'dest_exists', 'Destination file already exists');
+        }
     }
     if (pathFrom.rel === pathTo.rel) {
         return res.sendError(400, 'same_path', 'Source and destination paths are the same');
@@ -351,8 +358,15 @@ app.post('/api/files/folder/create', requireAuth, requireVaultAccess, getRequest
 app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequestPaths, async (req, res) => {
     // Support overwrite query param
     const overwrite = req.query.overwrite === 'true';
-    if (fs.existsSync(req.pathAbs) && !overwrite) {
-        return res.sendError(400, 'exists', 'A file already exists at the requested path');
+    if (fs.existsSync(req.pathAbs)) {
+        const destStats = await fs.promises.lstat(req.pathAbs);
+        if (destStats.isDirectory()) {
+            // Don't allow overwriting a directory
+            return res.sendError(400, 'dest_is_directory', 'Cannot overwrite a directory');
+        }
+        if (!overwrite) {
+            return res.sendError(400, 'exists', 'A file already exists at the requested path');
+        }
     }
     // Require size parameter
     const size = req.query.size === 'number' ? req.query.size : Number(req.query.size);
@@ -364,7 +378,7 @@ app.post('/api/files/upload/create', requireAuth, requireVaultAccess, getRequest
     if (stats.storage_bytes_available < size) {
         return res.sendError(400, 'insufficient_space', 'Not enough space in the vault for this upload');
     }
-    const uploadToken = getSecureRandomHex(8);
+    const uploadToken = getSecureRandomHex(32);
     const tempFilePath = `${req.pathAbs}.${uploadToken}`;
     db.prepare(`INSERT INTO uploads (token, username, vault, path_temp, path_dest, size) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(uploadToken, req.username, req.vault.name, tempFilePath, req.pathAbs, size);
@@ -435,8 +449,15 @@ app.post('/api/files/upload/finalize', requireAuth, requireVaultAccess, async (r
     if (!stat || stat.size !== upload.size) {
         return res.sendError(400, 'incomplete_upload', 'Uploaded file is incomplete or missing chunks');
     }
-    if (fs.existsSync(upload.path_dest) && !overwrite) {
-        return res.sendError(400, 'exists', 'A file already exists at the destination path');
+    if (fs.existsSync(upload.path_dest)) {
+        const destStats = await fs.promises.lstat(upload.path_dest);
+        if (destStats.isDirectory()) {
+            // Don't allow overwriting a directory
+            return res.sendError(400, 'dest_is_directory', 'Cannot overwrite a directory');
+        }
+        if (!overwrite) {
+            return res.sendError(400, 'exists', 'A file already exists at the destination path');
+        }
     }
     try {
         // No quota check (already checked at creation)
